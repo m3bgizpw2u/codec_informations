@@ -8,7 +8,7 @@ Generated for: DBpoweramp Rebuild Project
 - [!] NEEDS REVISION
 
 ## Tier 1 — Core Foundations
-- [ ] FFmpeg_libavcodec_Audio_API.md
+- [x] FFmpeg_libavcodec_Audio_API.md
 - [x] FFmpeg_libavformat_Muxing_Demuxing.md
 - [x] AudioEngineering_PCM_Fundamentals_Bit_Depth_Sample_Rate.md
 - [x] WAV_PCM_Waveform_Audio.md
