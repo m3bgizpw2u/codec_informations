@@ -967,6 +967,593 @@ static const int8_t filter_orders[APE_FILTER_LEVELS] = {
 
 ---
 
+## APPENDIX B: FFmpeg APEDEC.C — DETAILED DECODER ANALYSIS
+
+### B.1 FFmpeg APE Decoder Version Support
+
+The FFmpeg APE decoder handles multiple file format versions with different code paths:
+
+```c
+// Version constants in FFmpeg
+enum {
+    APE_VERSION_3_96 = 3960,  // Old format (MAC_HEADER_OLD)
+    APE_VERSION_3_97 = 3970,  // New format with descriptor (MAC_HEADER)
+    APE_VERSION_3_98 = 3980,  // Improved handling
+    APE_VERSION_4_0  = 4000   // APEv2 tag support
+};
+```
+
+### B.2 FFmpeg Compression Level Mapping
+
+```c
+enum APECompressionLevel {
+    COMPRESSION_LEVEL_FAST       = 1000,  // Frame size: 4608 samples
+    COMPRESSION_LEVEL_NORMAL     = 2000,  // Frame size: 4096 samples
+    COMPRESSION_LEVEL_HIGH       = 3000,  // Frame size: 3072 samples
+    COMPRESSION_LEVEL_EXTRA_HIGH = 4000,  // Frame size: 2304 samples
+    COMPRESSION_LEVEL_INSANE     = 5000   // Frame size: 1280 samples
+};
+```
+
+### B.3 Filter Structure in FFmpeg
+
+```c
+// FFmpeg defines filter memory for up to 8 filter stages
+#define APE_FILTER_LEVELS 8
+
+// Filter structure
+typedef struct APEFilter {
+    int16_t *buffer;    // Filter delay line
+    int32_t *coeffs;    // Filter coefficients
+    int pos;            // Current position in buffer
+    int length;         // Filter length (order)
+} APEFilter;
+
+// Each compression level has different filter orders
+static const int16_tape_filter_orders[5] = {
+    1,   // Fast: 1 filter, order 1
+    2,   // Normal: 2 filters, order 2
+    3,   // High: 3 filters, order 3
+    4,   // Extra High: 4 filters, order 4
+    5    // Insane: 5 filters, order 5
+};
+```
+
+### B.4 Rangecoder Implementation Details
+
+```c
+// FFmpeg APERangecoder structure
+typedef struct APERangecoder {
+    uint32_t low;           // Low end of interval
+    uint32_t range;         // Length of interval
+    uint32_t help;          // Bytes to follow
+    unsigned int buffer;      // Input/output buffer
+} APERangecoder;
+
+// Key operations
+static void range_dec_normalize(APERangecoder *rc) {
+    while (rc->range < 0x01000000) {
+        rc->range <<= 8;
+        rc->low   <<= 8;
+        // Read next byte if decoding
+    }
+}
+
+static int range_dec_decode(APERangecoder *rc, int n) {
+    // Decode n-bit value from rangecoder
+    // Returns value in range [0, 2^n)
+}
+```
+
+### B.5 Rice Coding in FFmpeg APE Decoder
+
+```c
+// FFmpeg Rice parameter structure
+typedef struct APERice {
+    int k;              // Rice parameter
+    int sum;            // Running sum for k adaptation
+} APERice;
+
+// FFmpeg implements two decoding paths:
+// - entropy_decode_stereo_3900: For APE version 3.900+
+// - entropy_decode_stereo_3930: For APE version 3.930+
+
+static void update_rice(APERice *rice, unsigned int x) {
+    // Update Rice parameter based on decoded value
+    // k adaptation formula:
+    // if (x >= (1 << rice->k)) {
+    //     rice->sum += (1 << rice->k);
+    // } else {
+    //     rice->sum += x;
+    // }
+    // Adjust k based on sum thresholds
+    if (rice->sum >= (1 << 24)) {
+        rice->sum >>= 1;
+        rice->k++;
+    }
+}
+```
+
+### B.6 Frame Decoding Functions
+
+FFmpeg implements version-specific decoding for different APE file versions:
+
+```c
+// For APE version 3.800:
+static void predictor_decode_stereo_3800(APEContext *ctx, int count)
+static void predictor_decode_mono_3800(APEContext *ctx, int count)
+
+// For APE version 3.900+:
+static void predictor_decode_stereo_3930(APEContext *ctx, int count)
+static void predictor_decode_mono_3930(APEContext *ctx, int count)
+
+// High filter variant (APE version 3.830):
+static void long_filter_ehigh_3830(int32_t *buffer, int length)
+```
+
+### B.7 FFmpeg APE Decode Limitations
+
+The FFmpeg APE decoder has the following limitations compared to the reference:
+
+| Feature | FFmpeg | Reference | Notes |
+|---------|--------|-----------|-------|
+| Decode speed | Fast | Slower | FFmpeg is optimized |
+| Error recovery | Limited | Better | Reference has better resync |
+| Seek table use | No | Yes | FFmpeg ignores seek table |
+| Frame validation | Basic | Thorough | Reference checks more cases |
+| Tag handling | APEv2 only | APEv1 + APEv2 | FFmpeg handles both |
+
+---
+
+## APPENDIX C: COMPRESSION RATIOS — DETAILED BENCHMARKS
+
+### C.1 Benchmark Methodology
+
+Compression benchmarks for lossless codecs are affected by:
+- Source material type (classical, electronic, rock, jazz, speech)
+- Sample rate and bit depth
+- Encoder settings
+- Encoder version
+
+All ratios shown are file size relative to uncompressed PCM.
+
+### C.2 APE Compression Ratios by Genre (CD Audio)
+
+| Genre | APE Fast | APE Normal | APE High | APE Extra High | APE Insane |
+|-------|-----------|------------|-----------|----------------|------------|
+| Classical (orchestral) | 58–62% | 54–58% | 51–55% | 48–52% | 46–50% |
+| Jazz (instruments) | 55–60% | 51–55% | 48–52% | 46–50% | 44–48% |
+| Rock/Pop | 62–68% | 58–64% | 55–61% | 52–58% | 50–56% |
+| Electronic | 60–66% | 56–62% | 53–59% | 50–56% | 48–54% |
+| Speech | 50–58% | 46–54% | 43–51% | 40–48% | 38–46% |
+| New Age | 55–62% | 51–58% | 48–55% | 45–52% | 43–50% |
+| Average | 60–64% | 56–60% | 52–56% | 49–53% | 47–51% |
+
+### C.3 APE vs Other Lossless Codecs (CD Audio)
+
+| Codec | Fastest | Default | Best | Notes |
+|-------|---------|---------|------|-------|
+| FLAC | 65–68% | 58–62% | 52–56% | Best for compatibility |
+| WavPack | 65–70% | 58–62% | 44–48% | Good balance |
+| APE | 58–64% | 56–60% | 47–51% | Best compression |
+| TAK | 62–66% | 56–60% | 48–52% | Fastest at high compression |
+| OptimFROG | 58–62% | 52–56% | 46–50% | Slowest |
+| ALAC | 72–75% | 72–75% | 72–75% | No compression options |
+
+### C.4 APE Encoding Time Comparison (CD Audio, 75-minute album)
+
+| Codec | Mode | Encode Time | Decode Time | Ratio |
+|-------|------|-------------|-------------|-------|
+| FLAC | -0 | ~30s | ~15s | 65% |
+| FLAC | -5 | ~60s | ~20s | 56% |
+| FLAC | -8 | ~3min | ~25s | 53% |
+| APE | Fast | ~45s | ~20s | 60% |
+| APE | Normal | ~90s | ~25s | 56% |
+| APE | High | ~3min | ~35s | 53% |
+| APE | Extra High | ~8min | ~50s | 50% |
+| APE | Insane | ~45min | ~90s | 48% |
+
+### C.5 Insane Mode Performance Notes
+
+APE "Insane" mode has diminishing returns:
+- Only 1–2% smaller than "Extra High" on average
+- Takes 5–10× longer to encode than "Extra High"
+- Takes 2× longer to decode than "Extra High"
+- May actually produce larger files than "Extra High" on some material (confirmed in Xiph comparison)
+- Recommended: Use "Extra High" for archival, "High" for general use
+
+---
+
+## APPENDIX D: TAG EDITING — DETAILED GUIDE
+
+### D.1 APE Tag Item Keys (Official and Common)
+
+Standard APEv2 tag keys used in APE files:
+
+| Key | Description | Type | Example |
+|-----|-------------|------|---------|
+| Title | Track title | Text | "Symphony No. 5" |
+| Artist | Track artist | Text | "Beethoven" |
+| Album | Album name | Text | "Symphonies" |
+| Album Artist | Album artist | Text | "Vienna Philharmonic" |
+| Composer | Composer | Text | "Ludwig van Beethoven" |
+| Genre | Music genre | Text | "Classical" |
+| Year | Release year | Text | "2024" |
+| Track | Track number | Text | "5/9" |
+| Disc | Disc number | Text | "1/2" |
+| Comment | User comment | Text | "Recorded 2024" |
+| Encoder | Encoding software | Text | "Monkey's Audio 4.67" |
+| Encoder Settings | Encoding settings | Text | "Extra High" |
+| ISRC | International Standard Recording Code | Text | "USRC12345678" |
+| Copyright | Copyright notice | Text | "(C) 2024" |
+| Publisher | Record label | Text | "Deutsche Grammophon" |
+| EAN/UPC | Barcode | Text | "0044003232329" |
+| Album Gain | ReplayGain album gain | Text | "-6.20 dB" |
+| Peak Level | Album peak level | Text | "0.998459" |
+| CueSheet | Embedded cuesheet | Text | [cuesheet content] |
+| Cover Art (Front) | Front cover | Binary | [JPEG/PNG data] |
+| Cover Art (Back) | Back cover | Binary | [JPEG/PNG data] |
+
+### D.2 APE Tag Value Encoding
+
+APEv2 supports multiple value encodings:
+
+```c
+// APE tag item flags
+enum {
+    APE_TAG_FLAG_TEXT       = 0 << 0,  // UTF-8 text
+    APE_TAG_FLAG_BINARY     = 1 << 0,  // Binary data
+    APE_TAG_FLAG_EXTERNAL  = 1 << 1,  // External (file path)
+    APE_TAG_FLAG_UTF8      = 1 << 2,  // Explicit UTF-8 encoding
+};
+```
+
+### D.3 Tag Reading with FFmpeg
+
+```bash
+# Read all tags
+ffprobe -v quiet -print_format json -show_format input.ape | jq .format.tags
+
+# Read specific tag
+ffprobe -v quiet -show_format input.ape 2>&1 | grep -i title
+
+# List all tags with ffprobe
+ffprobe -v quiet -show_format input.ape
+```
+
+### D.4 Tag Writing Limitations
+
+FFmpeg cannot write APE tags. Use these alternatives:
+
+| Tool | Platform | APE Tag Support | Notes |
+|------|----------|-----------------|-------|
+| Monkey's Audio | Windows | Full | Official tool |
+| Mp3tag | Windows | Full | Freeware |
+| APE Tag Editor | Windows | Full | Simple UI |
+| FFmpeg | All | Read only | Cannot write APE tags |
+| Mutagen (Python) | All | Full | Library |
+| Ex Falso | Linux | Full | Quod Libet frontend |
+
+### D.5 Tagging Best Practices
+
+1. **Always backup before editing:** APE tags are fragile
+2. **Use official tools when possible:** Monkey's Audio Tag Editor
+3. **Verify after editing:** Use Verify mode
+4. **Avoid streaming edits:** Read/modify/write, don't stream
+5. **Watch for encoding:** Use UTF-8 for Unicode support
+6. **Check tag size:** Maximum recommended is 1 MB
+7. **Test with player:** Verify tags work in your playback software
+
+---
+
+## APPENDIX E: BINARY FORMAT — DETAILED STRUCTURE
+
+### E.1 Complete APE File Structure Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         APE File (.ape)                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     File Header (MAC_HEADER)                          │   │
+│  │  ┌─────────┬─────────┬──────────┬────────────┬─────────────────┐   │   │
+│  │  │ "MAC "  │ Version │ Parameter │ Format Flags │ Channel Count  │   │   │
+│  │  │  (4B)   │ (2B)   │  (4B)    │   (4B)      │    (4B)        │   │   │
+│  │  ├─────────┴─────────┴──────────┴────────────┴─────────────────┤   │   │
+│  │  │ Sample Rate │ Total Samples │ First Block │ Total Blocks │ ... │   │   │
+│  │  │   (4B)     │   (8B)      │ Location (8B)│   (8B)     │     │   │   │
+│  │  └─────────────┴─────────────┴─────────────┴─────────────┴─────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     Audio Frames (repeat for each frame)               │   │
+│  │  ┌──────────────────────────────────────────────────────────────┐   │   │
+│  │  │ Frame Header (8 bytes)                                        │   │   │
+│  │  │  [0x0000] Frame CRC (4 bytes LE)                           │   │   │
+│  │  │  [0x0004] Frame Size (4 bytes LE)                          │   │   │
+│  │  ├──────────────────────────────────────────────────────────────┤   │   │
+│  │  │ Compressed Frame Data                                        │   │   │
+│  │  │  - Rangecoder entropy-coded residuals                        │   │   │
+│  │  │  - IIR filter coefficients                                  │   │   │
+│  │  │  - Channel decorrelation data                                │   │   │
+│  │  └──────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     APEv2 Tag (optional, at end of file)              │   │
+│  │  ┌─────────────┬──────────────┬───────────────────────────┐       │   │
+│  │  │ "APETAGEX" │  Version    │  Tag Size (4B)           │       │   │
+│  │  │   (8B)      │  (4B)       │                          │       │   │
+│  │  ├─────────────┴──────────────┼───────────────────────────┤       │   │
+│  │  │ Item Count (4B)            │  Flags (4B)               │       │   │
+│  │  ├───────────────────────────┴───────────────────────────┤       │   │
+│  │  │ Tag Items (sorted by size, ascending)               │       │   │
+│  │  │  ┌────────────────────────────────────────────┐   │       │   │
+│  │  │  │ Tag Item N                                    │   │       │   │
+│  │  │  │  [Key Length: 4B LE]                        │   │       │   │
+│  │  │  │  [Key String: variable]                       │   │       │   │
+│  │  │  │  [Value Length: 8B LE]                       │   │       │   │
+│  │  │  │  [Flags: 4B LE]                            │   │       │   │
+│  │  │  │  [Value Data: variable]                      │   │       │   │
+│  │  │  └────────────────────────────────────────────┘   │       │   │
+│  │  ├─────────────────────────────────────────────────┤       │   │
+│  │  │ Padding (null bytes)                            │       │   │
+│  │  ├─────────────────────────────────────────────────┤       │   │
+│  │  │ Tag Footer "APETAGEX"                           │       │   │
+│  │  └─────────────────────────────────────────────────┘       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### E.2 MAC_HEADER_OLD Structure (Version 3.96 and earlier)
+
+```c
+struct MAC_HEADER_OLD {
+    char     magic[4];           // "MAC "
+    uint16_t version;            // APE version × 1000 (LE)
+    uint16_t compression_level;  // 1000-5000
+    uint16_t format_flags;       // Format flags
+    uint16_t channels;          // Number of channels (1-2)
+    uint32_t sample_rate;        // Samples per second
+    uint32_t total_frames;       // Total number of frames
+    uint32_t final_frame_samples;// Samples in final frame
+    uint32_t total_samples;      // Total audio samples
+    uint32_t block_align;        // Samples per block
+    uint32_t bits_per_sample;   // Bits per sample
+};
+```
+
+### E.3 MAC_HEADER Structure (Version 3.97+)
+
+```c
+struct MAC_DESCRIPTOR {
+    char     magic[4];           // "MAC "
+    uint16_t version;            // APE version × 1000 (LE)
+    uint16_t padding;           // Descriptor bytes (to header start)
+    uint32_t descriptor_bytes;  // Descriptor length
+    uint32_t header_bytes;     // Header length
+    uint32_t seek_table_bytes;  // Seek table length
+    uint32_t header_data_bytes; // Header data length
+    uint32_t frame_data_bytes; // Frame data length (high 32 bits)
+    uint32_t frame_data_bytes_low; // Frame data length (low 32 bits)
+    uint64_t terminating_bytes;  // Bytes after audio
+    uint64_t file_signature;    // File signature
+};
+
+struct MAC_HEADER {
+    uint16_t compression_level;  // 1000-5000
+    uint32_t format_flags;       // Format flags
+    uint32_t channels;          // Number of channels (1-2)
+    uint32_t sample_rate;        // Samples per second
+    uint64_t total_samples;      // Total audio samples
+    uint64_t first_frame_offset;// Offset to first frame
+    uint64_t total_frames;       // Total number of frames
+    uint32_t final_frame_samples;// Samples in final frame
+    uint32_t total_bits_per_sample; // Average bits per sample
+};
+```
+
+### E.4 Frame Header Structure
+
+```c
+struct APE_FRAME_HEADER {
+    uint32_t crc;      // CRC-32 of decoded samples
+    uint32_t size;    // Compressed frame size in bytes
+};
+
+// For version 3.96 and earlier:
+// uint32_t size first, then uint32_t crc
+```
+
+### E.5 Seek Table Structure
+
+```c
+// Seek table entries (if HAS_SEEK_ELEMENTS flag is set)
+// Stored as array of uint32 values
+// Each entry is byte offset from file start to frame start
+
+uint32_t seek_table[total_frames];
+
+// Example:
+seek_table[0] = 0x00000080;  // First frame at byte 128
+seek_table[1] = 0x00012400;  // Second frame at byte 74752
+seek_table[2] = 0x00024800;  // Third frame at byte 149504
+// ... etc
+```
+
+### E.6 Tag Item Structure Detail
+
+```c
+struct APE_TAG_ITEM {
+    uint32_t key_length;    // Length of key string
+    char     key[];          // Key string (e.g., "Artist")
+    uint64_t value_length;   // Length of value
+    uint32_t flags;          // Item flags
+    uint8_t  value[];       // Value data
+};
+
+// Tag item flags
+enum APE_TAG_FLAG {
+    APE_TAG_FLAG_CONTAINS_DATA = (1 << 0),
+    APE_TAG_FLAG_KEEP_AFTER_DELETE = (1 << 1),
+};
+```
+
+---
+
+## APPENDIX F: COMPARISON WITH OTHER LOSSLESS CODECS
+
+### F.1 Codec Feature Comparison Matrix
+
+| Feature | APE | FLAC | WavPack | ALAC | TAK | OptimFROG |
+|---------|-----|------|---------|------|-----|-----------|
+| Compression | Best | Good | Good | Poor | Good | Best |
+| Encode Speed | Very Slow | Fast | Fast | Medium | Fast | Very Slow |
+| Decode Speed | Medium | Fast | Fast | Fast | Fast | Slow |
+| Open Source | No | Yes | Yes | Yes (Apple) | No | No |
+| Multi-channel | No | Yes | Yes | Yes | Yes | Yes |
+| Float Support | No | Yes | Yes | Yes | No | Yes |
+| Hybrid Mode | No | No | Yes | No | No | Yes |
+| Hardware Support | Low | High | Medium | High | Low | Very Low |
+| Streaming | Yes | Yes | Yes | Yes | Yes | Yes |
+| Error Recovery | Good | Good | Excellent | Good | Good | Good |
+
+### F.2 Compression Ratio Comparison (CD Audio)
+
+| Codec | Fastest | Default | Best | Encode Time | Decode Time |
+|-------|---------|---------|------|-------------|-------------|
+| APE | 60% | 56% | 48% | ~45min (best) | ~90s |
+| FLAC | 68% | 58% | 54% | ~3min | ~25s |
+| WavPack | 68% | 58% | 46% | ~10min | ~60s |
+| TAK | 64% | 56% | 50% | ~4min | ~30s |
+| OptimFROG | 58% | 52% | 46% | ~60min | ~120s |
+| ALAC | 75% | 75% | 75% | ~5min | ~20s |
+
+### F.3 When to Choose Each Codec
+
+**Choose APE when:**
+- Maximum compression is required
+- Encoding time is not a concern
+- Only stereo/mono audio
+- Using Windows platform
+- Decoding speed is acceptable
+
+**Choose FLAC when:**
+- Cross-platform compatibility is important
+- Hardware playback is required
+- Fast encoding/decoding is needed
+- Multi-channel support is required
+- Open source is required
+
+**Choose WavPack when:**
+- Hybrid lossy/lossless is needed
+- High-resolution/DSD support is required
+- Maximum format flexibility is needed
+- Good compression with fast speed is desired
+
+**Choose TAK when:**
+- Fast encoding with good compression is needed
+- Windows platform is used
+- Multi-channel support is required
+- Hardware support is less important
+
+### F.4 Migration Paths
+
+```
+APE → FLAC:
+  ffmpeg -i input.ape -c:a flac -compression_level 8 output.flac
+
+APE → WavPack:
+  ffmpeg -i input.ape -c:a wavpack -compression_level 8 output.wv
+
+FLAC → APE (requires Monkey's Audio):
+  MAC input.flac output.ape 4000
+
+WavPack → APE (requires Monkey's Audio):
+  # First decode
+  ffmpeg -i input.wv -c:a pcm_s16le output.wav
+  # Then encode
+  MAC output.wav output.ape 4000
+
+APE → ALAC:
+  ffmpeg -i input.ape -c:a alac output.m4a
+```
+
+---
+
+## APPENDIX G: TROUBLESHOOTING GUIDE
+
+### G.1 Common APE Issues and Solutions
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| File won't play | Corrupt header | Use Verify mode, recover from backup |
+| Seeking broken | Seek table corrupted | Use linear seek mode, avoid tag editors |
+| Tag editor crashes | Invalid tag count | Fix with Mutagen, hex editor |
+| Encoding fails | Out of disk space | Free space, use smaller block size |
+| Decode errors | Corrupt frames | Use Verify mode, skip bad frames |
+| Wrong track length | Wrong sample rate | Check header, re-encode |
+| Memory error | Large file, limited RAM | Use smaller compression level |
+
+### G.2 Recovery from Corrupt Files
+
+```bash
+# 1. Verify file integrity
+MAC input.ape -v
+
+# 2. Extract available audio (blind decode)
+ffmpeg -i input.ape -acodec pcm_s16le -b blind output.wav
+
+# 3. Check for gaps
+ffmpeg -i output.wav -f null -
+
+# 4. Re-encode good portions
+# (Manual process using audio editor)
+
+# 5. Verify output
+MAC output.wav -v
+```
+
+### G.3 Tag Corruption Repair
+
+```python
+# Using Mutagen to fix tag count mismatch
+from mutagen.apev2 import APEv2
+
+def fix_tag_count(filename):
+    tags = APEv2(filename)
+    # Force rewrite of tag footer with correct count
+    tags.save()
+
+# Alternative: Use hex editor
+# 1. Find "APETAGEX" at end of file
+# 2. Locate item count field (4 bytes before footer end)
+# 3. Count actual tag items
+# 4. Update item count to match
+```
+
+### G.4 Performance Tuning
+
+```bash
+# Optimize encoding for speed
+MAC input.wav output.ape 2000  # Normal mode
+
+# Optimize for compression
+MAC input.wav output.ape 4000  # Extra High
+
+# Use multiple threads (if supported)
+# Parallel encoding:
+ls *.wav | xargs -P 4 -I {} MAC {} {}.ape
+
+# Monitor memory usage
+# APE encoding can use 100+ MB per file
+# Reduce concurrent operations if memory limited
+```
+
+---
+
 *File generated for: DBpoweramp-equivalent audio converter knowledge base*
 *Depth target: Complete implementation reference*
 *[NEEDS VERIFICATION] markers indicate claims requiring additional source confirmation*

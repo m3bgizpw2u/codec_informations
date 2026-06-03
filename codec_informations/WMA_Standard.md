@@ -201,14 +201,120 @@ Bit Offset   Bit Width   Field Name              Type      Description
 
 ---
 
+### 3.4 Audio Frame Data Structure (Detailed)
+The audio frame in WMA Standard contains the encoded spectral data following the frame header.
+
+```
+Byte Offset   Size    Field Name              Type        Description
+------------  ------  ----------------------  ----------  --------------------------------
+0x0000        4B      Frame Sync             uint32      Must be 0x01000000
+0x0004        2B      Frame Size Low         uint16      Lower 16 bits of frame size
+0x0006        1B      Bitrate Index          uint8       Index into bitrate table (0–15)
+0x0007        1B      Sample Rate Index      uint8       Index into sample rate table
+0x0008        2B      Frame Size High        uint16      Upper 16 bits of frame size + flags
+0x000A        2B      Channel Configuration  uint16      Number of channels - 1
+0x000C        2B      MS Stereo Flags        uint16      Bit 0: MS stereo enabled
+0x000E        2B      Scale Factor Band Count uint16     Number of scale factor bands
+0x0010        var     Scale Factors         variable    Huffman-coded scale factor deltas
+0xXXXX        var     Spectral Data          variable    Huffman-coded MDCT coefficients
+```
+
+### 3.5 Scale Factor Band Structure
+The scale factors are grouped into bands corresponding to critical bands of human hearing.
+
+```
+Band Number   Frequency Range (Hz)   MDCT Bins   Bit Allocation Bits
+-----------   --------------------   ----------  --------------------
+0             0 – 69               0–3         0–4
+1             69 – 138              4–7         2–6
+2             138 – 207             8–15        3–8
+3             207 – 276             16–23       4–10
+4             276 – 345             24–31       5–12
+5             345 – 414             32–47       6–14
+6             414 – 552             48–63       7–16
+7             552 – 690             64–79       8–18
+8             690 – 828             80–95       9–20
+9             828 – 966             96–111      10–22
+10            966 – 1104            112–127     11–24
+...           ...                   ...         ...
+```
+
+### 3.6 Huffman Code Tables
+WMA Standard uses multiple Huffman codebooks for different types of data.
+
+```
+Codebook    Purpose                    Entries    Max Code Length
+---------   ------------------------   --------   ---------------
+CB0         Zero coefficients          1          1 bit
+CB1         Small positive values      16         4 bits
+CB2         Small negative values      16         4 bits
+CB3         Mixed small values        32         5 bits
+CB4         Scale factor deltas       64         6 bits
+CB5         Large magnitude values    128        7 bits
+CB6         Escape + magnitude        256        8+ bits
+```
+
+### 3.7 ASF Packet Structure
+ASF packets contain multiple WMA frames with overhead for streaming purposes.
+
+```
+Byte Offset   Size    Field Name              Type        Description
+------------  ------  ----------------------  ----------  --------------------------------
+0x0000        1B      Payload Count           uint8       Number of payloads in packet
+0x0001        1B      Sequence                uint8       Packet sequence number
+0x0002        2B      Unknown                 uint16      Reserved/unknown
+0x0004        4B      Packet Length           uint32      Total packet size
+0x0008        var     Padding                variable    Padding bytes
+0xXXXX        var     Payloads               variable    One or more frame payloads
+```
+
+### 3.8 CRCs and Error Detection
+```
+CRC Coverage:
+  Frame-level CRC:  16-bit CRC covering frame header and audio data
+  Packet-level CRC:  32-bit CRC covering entire ASF packet (optional)
+  
+CRC Polynomial:  x^16 + x^12 + x^5 + 1  (CRC-16-CCITT)
+CRC Initial:    0xFFFF
+```
+
+### 3.9 Bitstream Example (Hex Dump)
+```
+Example WMAv2 frame header (bytes):
+  00: 01 00 00 00              ; Sync word (0x0100 in little-endian)
+  04: 20 03                    ; Frame size = 0x0320 = 800 bytes
+  06: 4B                      ; Bitrate index 9 = 64 kbps per channel
+  07: 03                      ; Sample rate index 3 = 22050 Hz
+  08: 01 00                    ; Channel config = stereo
+  0A: 00 00                    ; MS stereo flags
+  0C: 20 00                    ; 32 scale factor bands
+```
+
 ## 4. ENCODING ALGORITHM — DEEP DETAIL
 
-### 4.1 Pre-Processing Stage
-- **DC offset removal:** Subtraction of running mean (high-pass filter with ~4 Hz cutoff)
-- **Pre-emphasis filter:** Optional, 1-pole high-shelf; coefficient ~0.8 [NEEDS VERIFICATION]
-- **Windowing function:** Sine window applied before MDCT
-- **Level normalization:** Dynamic range scaling to prevent clipping in fixed-point domain
-- **Stereo decorrelation pre-step:** Optional M/S (mid/side) transformation before encoding
+### 4.1 Detailed Pre-Processing Stage
+- **DC offset removal:** Subtraction of running mean using 1-pole IIR high-pass filter with ~4 Hz cutoff. Formula: `y[n] = x[n] - x[n-1] + 0.999 × y[n-1]`
+- **Pre-emphasis filter:** Optional 1-pole high-shelf with coefficient ~0.8; applied only to certain profiles [NEEDS VERIFICATION]
+- **Windowing function:** Sine window: `w[n] = sin(π × (n + 0.5) / N)` where N is window size
+- **Level normalization:** Peak normalization to prevent clipping in fixed-point domain
+- **Stereo decorrelation pre-step:** Optional M/S (mid/side) transformation: `M = (L + R) / 2`, `S = (L - R) / 2`
+
+### 4.2 Detailed QMF Filterbank Analysis
+The 32-band QMF (Quadrature Mirror Filter) analysis filterbank decomposes the input signal into subbands.
+
+```
+QMF Filterbank Specifications:
+  Number of bands:     32
+  Bandwidth per band:  SR / 64 Hz
+  Input window:        1024 samples
+  Output:              32 subband samples per analysis block
+  Filter coefficients: 512 taps (per band)
+  
+Mathematical operation:
+  For each band k (0–31):
+    X[k][n] = Σ(m=0 to 1023) x[m] × h[k][m mod 1024]
+  where h[k] is the k-th QMF analysis filter
+```
 
 ### 4.2 Analysis / Transform Stage
 
@@ -318,7 +424,39 @@ Scale factor coding:
 | High | 128 kbps | High-quality streaming | Near-transparent |
 | Highest | 160–192 kbps | Maximum quality | Yes (most content) |
 
----
+#### Variable Bitrate (VBR) Encoding
+```
+VBR Modes in WMA Standard:
+  Mode 0:     CBR (Constant Bitrate)
+  Mode 1:     VBR (Quality-based)
+  Mode 2:     VBR (Peak bitrate constrained)
+  Mode 3:     VBR (Average bitrate constrained)
+
+Quality Levels (for VBR Mode 1):
+  Level 0:    Highest quality, variable bitrate
+  Level 1:    High quality
+  Level 2:    Medium quality
+  Level 3:    Low quality
+  Level 4:    Voice quality
+```
+
+#### Frame Size Calculation
+```
+Frame size in WMA Standard is determined by:
+  - Sample rate (determines frame length bits)
+  - Bitrate (determines bits per frame)
+  - Channel mode (mono/stereo)
+
+Formula:
+  if sample_rate <= 16000:
+    frame_length_bits = 9
+  else if sample_rate <= 22050 or (WMAv1 and sample_rate <= 32000):
+    frame_length_bits = 10
+  else:
+    frame_length_bits = 11
+  
+  frame_size_bytes = (bitrate × (2^frame_length_bits) / sample_rate) / 8
+```
 
 ## 5. DECODING ALGORITHM — DEEP DETAIL
 
@@ -339,6 +477,54 @@ Scale factor coding:
 - **ASF seeking:** Index-based seeking using ASF index object
 - **Seek table:** Stored in optional Data Object Index; entries point to packet offsets
 - **Precision:** Millisecond accuracy (not sample-accurate)
+
+### 5.2 Detailed Bit Allocation Algorithm
+The bit allocation algorithm determines how many bits to allocate to each scale factor band.
+
+```
+Bit Allocation Algorithm (Step-by-Step):
+
+1. Compute FFT of input block (1024-point FFT)
+
+2. Compute bark spectrum:
+   for bark_band b:
+     bark_energy[b] = Σ(k in bark_band[b]) Energy[k]
+
+3. Compute masking thresholds:
+   for each bark band:
+     spreading[b] = Σ(other_b) bark_energy[other_b] × spreading_function[b][other_b]
+     threshold[b] = bark_energy[b] / spreading[b]
+
+4. Compute bit allocation:
+   available_bits = frame_bit_budget - header_bits - scale_factor_bits
+   
+   repeat until all bits allocated or no more SMR improvement:
+     for each band b:
+       SMR[b] = bark_energy[b] / threshold[b]
+     find band with maximum SMR
+     allocate 1 bit to that band
+     update threshold[b] using water-filling
+
+5. Encode scale factors and coefficients with allocated bits
+```
+
+### 5.3 Inverse Quantization Details
+After Huffman decoding, the quantized spectral coefficients are inverse quantized.
+
+```
+Inverse Quantization Formula:
+  if code == 0:
+    X = 0
+  else:
+    sign = -1 if code < 0 else 1
+    magnitude = abs(code)
+    X = sign × (magnitude)^(4/3) × 2^(gain / 4)
+
+where:
+  code = Huffman-decoded coefficient value
+  gain = scale factor for this band (0–127)
+  X = dequantized coefficient value
+```
 
 ### 5.2 Core Decode Pipeline
 ```
@@ -381,6 +567,37 @@ Scale factor coding:
 - **Corrupt frame detection:** Huffman decode failure, invalid quantized values
 - **Concealment method:** Repeat previous good frame (muted slightly)
 - **Maximum consecutive errors before silence:** ~3 frames
+
+### 5.4 Stereo Decoding (MS Mode)
+When MS stereo is enabled, the mid and side channels are decoded and converted back to left and right.
+
+```
+MS to L/R Conversion:
+  L = M + S
+  R = M - S
+  
+or normalized:
+  L = (M + S) / √2
+  R = (M - S) / √2
+
+Where:
+  M = Mid channel = (L + R) / 2
+  S = Side channel = (L - R) / 2
+```
+
+### 5.5 QMF Synthesis Filterbank
+After inverse MDCT, the subband signals are reconstructed using the QMF synthesis filterbank.
+
+```
+QMF Synthesis Specifications:
+  Number of bands:     32
+  Output block:       1024 samples
+  Overlap:            50% with previous block
+  
+Mathematical operation:
+  x[n] = Σ(k=0 to 31) X[k][n] × h_synth[k][n mod 1024]
+  where h_synth is the k-th QMF synthesis filter
+```
 
 ---
 

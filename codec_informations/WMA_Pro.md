@@ -156,17 +156,87 @@ WMA Pro Frame (within ASF Packet):
   └── Frame-level side information
 ```
 
-### 3.4 Block Size Encoding
-| Block Size Index | Samples per Block | Bits for Size | Notes |
-|-----------------|-------------------|---------------|-------|
-| 0 | 64 | B=6 | Short block |
-| 1 | 128 | B=7 | |
-| 2 | 256 | B=8 | |
-| 3 | 512 | B=9 | |
-| 4 | 1024 | B=10 | |
-| 5 | 2048 | B=11 | Default long block |
-| 6 | 4096 | B=12 | |
-| 7 | 8192 | B=13 | Maximum block size |
+### 3.6 WMA Pro Profile Specifications
+WMA Pro defines three profile levels for different complexity and quality requirements.
+
+| Parameter | P1 (Mobile) | P2 (Desktop) | P3 (High-Quality) |
+|-----------|-------------|---------------|-------------------|
+| Max Bitrate (stereo) | 384 kbps | 768 kbps | 768 kbps |
+| Max Bitrate (5.1) | 512 kbps | 1500 kbps | 1500 kbps |
+| Max Block Size | 4096 | 8192 | 8192 |
+| Max Bands | 29 | 29 | 29 |
+| VLC Bits | 8 | 9 | 9 |
+| Prediction Order | 512 | 1024 | 2048 |
+| Channel Transform | Limited | Full | Full |
+| MS Stereo | Yes | Yes | Yes |
+| Channel Coupling | No | Yes | Yes |
+
+### 3.7 Vector Huffman Coding Tables
+WMA Pro uses vector Huffman coding with multiple codebooks for efficient coefficient encoding.
+
+```
+Codebook Types:
+  CB1:  1 coefficient per symbol
+  CB2:  2 coefficients per symbol (vec2)
+  CB4:  4 coefficients per symbol (vec4)
+  
+Each codebook has:
+  - Escape code for out-of-range values
+  - Magnitude categories
+  - Sign bits
+
+Magnitude Categories:
+  0:    Values in range [-1, 1]
+  1:    Values in range [-3, 3]
+  2:    Values in range [-7, 7]
+  3:    Values in range [-15, 15]
+  4:    Values in range [-31, 31]
+  5:    Values in range [-63, 63]
+  6:    Values in range [-127, 127]
+  7:    Values in range [-255, 255]
+  8:    Escape + raw 8-bit value
+  9:    Escape + raw 16-bit value
+  10+:  Escape + raw 32-bit value
+```
+
+### 3.8 Channel Transform Modes
+WMA Pro supports various channel transform modes for efficient multichannel encoding.
+
+```
+Channel Transform Types:
+  Type 0: No transform (independent channels)
+  Type 1: M/S stereo (for stereo pairs)
+  Type 2: LFE channel (low-frequency effects)
+  Type 3: Channel coupling with prediction
+  
+Channel Ordering (5.1 example):
+  Index 0: Front Left (FL)
+  Index 1: Front Right (FR)
+  Index 2: Center (C)
+  Index 3: LFE
+  Index 4: Surround Left (SL)
+  Index 5: Surround Right (SR)
+  
+Transform Priority:
+  1. LFE flag (if channel is LFE)
+  2. M/S stereo pair (FL/FR or SL/SR)
+  3. Independent channels
+```
+
+### 3.9 ASF Stream Configuration Object
+The WMA Pro codec configuration is stored in the extradata of the ASF stream properties object.
+
+```
+Extradata Structure (10 bytes):
+  Offset  Size  Field                   Description
+  ------  ----  ---------------------   ----------------------------
+  0       2     Samples Per Frame       Samples encoded per frame
+  2       2     Maximum Packet Size      Maximum packet size
+  4       2     Max Bitrate             Maximum bitrate in bps
+  6       2     Average Bitrate          Average bitrate in bps
+  8       1     Channel Configuration   Channel layout flags
+  9       1     Codec Profile           0=P1, 1=P2, 2=P3
+```
 
 ### 3.5 Sample Format Support
 | Bit Depth | Type | Supported | Notes |
@@ -342,6 +412,22 @@ Scale factor coding:
 | 512–768 | 5.1 | Maximum surround quality |
 | 768–1500 | 7.1 | High-quality 7.1 |
 
+#### VBR Mode Parameters
+```
+WMA Pro VBR Modes:
+  Mode 0:  CBR (Constant Bitrate)
+  Mode 1:  VBR (Quality-based)
+  Mode 2:  VBR (Peak bitrate constrained)
+  Mode 3:  VBR (Average bitrate constrained)
+
+Quality Levels:
+  Q0:      Highest quality (largest file)
+  Q1:      High quality
+  Q2:      Medium quality
+  Q3:      Low quality
+  Q4:      Voice quality
+```
+
 ---
 
 ## 5. DECODING ALGORITHM — DEEP DETAIL
@@ -409,6 +495,43 @@ Scale factor coding:
   - Interpolation for longer error bursts
   - Muting after ~3 consecutive errors
 - **Packet loss concealment:** WMA Pro supports PLC via ASF streaming protocol
+
+### 5.4 Subframe Processing Details
+Each WMA Pro frame contains one or more subframes with variable block sizes.
+
+```
+Subframe Header Structure:
+  Byte Offset  Field               Bits    Description
+  -----------  -----------------  ------  --------------------------------
+  0            Block Size          6       Size index (64–8192 samples)
+  6            Channel Transform   3       Transform type for this subframe
+  9            Scale Factor Present 1      Scale factors follow header
+  10           Spectral Data Size  12      Bits for spectral data
+  22           Reserved            10      Reserved for future use
+  
+Subframe Priority:
+  Subframes are processed in order of decreasing block size
+  Large blocks (low frequency) processed first
+  Small blocks (high frequency) processed later
+```
+
+### 5.5 Inter-Channel Decorrelation
+WMA Pro uses LMS-based inter-channel prediction for multichannel content.
+
+```
+LMS Inter-Channel Prediction:
+  For each pair of channels (e.g., FL, FR):
+    1. Compute cross-correlation
+    2. Estimate LMS filter coefficients
+    3. Predict one channel from the other
+    4. Encode residual (difference)
+    
+LMS Parameters:
+  Filter Order:     4–16 coefficients
+  Step Size:        Adaptive (0.01–0.1)
+  Adaptation:       Forward and backward adaptation
+  Convergence:      ~1000 samples
+```
 
 ---
 

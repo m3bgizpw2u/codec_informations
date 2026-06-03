@@ -1344,6 +1344,357 @@ wvtag -l archive.wv | grep MD5
 
 ---
 
+## APPENDIX D: BINARY FORMAT — COMPLETE BLOCK DIAGRAM
+
+### D.1 Complete WavPack Block Structure
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        WavPack File (.wv)                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     WavPack Block #N                                  │   │
+│  │  ┌───────────────┬─────────────────────────────────────────────┐   │   │
+│  │  │ Block Header  │  Metadata Sub-blocks + Audio Data           │   │   │
+│  │  │   (32 bytes) │                                             │   │   │
+│  │  ├───────────────┼──────────────────────┬──────────────────────┤   │   │
+│  │  │ wvpk (4B)    │ ID_ENCINFO          │ ID_DATA              │   │   │
+│  │  │ block_size(4)│ ID_DECTERMS         │ (compressed audio)   │   │   │
+│  │  │ version (2)   │ ID_DECWEIGHTS       │                      │   │   │
+│  │  │ track (1)     │ ID_DECSAMPLES       │                      │   │   │
+│  │  │ sub_index (1) │ ID_ENTROPY          │                      │   │   │
+│  │  │ total_samps(4)│ ID_SHAPING          │                      │   │   │
+│  │  │ block_index(4)│ ID_FLOATINFO        │                      │   │   │
+│  │  │ block_samps(4)│ ID_INT32INFO        │                      │   │   │
+│  │  │ flags (4)     │ ID_CHANINFO         │                      │   │   │
+│  │  │ crc (4)       │ ...                 │                      │   │   │
+│  │  └───────────────┴──────────────────────┴──────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  [More WavPack Blocks...]                                                   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     APEv2 Tag (optional)                             │   │
+│  │  ┌───────────────┬───────────────┬─────────────────────────────┐   │   │
+│  │  │  Tag Header   │  Tag Items...  │  Tag Footer                 │   │   │
+│  │  │  "APETAGEX"  │  (key=value)  │  "APETAGEX"               │   │   │
+│  │  └───────────────┴───────────────┴─────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Metadata Sub-block Header Format:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Byte 0:   Bits 0-4: Metadata ID (0x00-0x1F)                                │
+│           Bit 5:  Reserved                                                  │
+│           Bit 6:  Size is odd (add 1 to size field)                         │
+│           Bit 7:  Long form (size is 3 bytes, not 1)                       │
+│                                                                             │
+│ Bytes 1-2: Size (1 byte if bit 7=0, 2 bytes LE if bit 7=1)                │
+│ Bytes 3+:  Metadata data (size specified in header)                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### D.2 Metadata Sub-block ID Reference Table
+
+| ID (hex) | Name | Description | Data Format |
+|----------|------|-------------|-------------|
+| 0x00 | ID_DUMMY | Padding/no-op | None |
+| 0x01 | ID_ENCINFO | Encoder parameters | block_size, sample_rate, bits/sample |
+| 0x02 | ID_DECOR_TERMS | Decorrelation terms | Array of int8 term values |
+| 0x03 | ID_DECOR_WEIGHTS | Filter weights | Array of int16 weights (Q10.6) |
+| 0x04 | ID_DECOR_SAMPLES | Initial samples | Array of int32 initial values |
+| 0x05 | ID_ENTROPY | Entropy vars | Median values per channel |
+| 0x06 | ID_HYBRID | Hybrid mode | Bitrate, shaping coefficients |
+| 0x07 | ID_SHAPING | Noise shaping | Shaping weights |
+| 0x08 | ID_FLOATINFO | Float params | Float exp, max_exp, shift |
+| 0x09 | ID_INT32INFO | Int32 params | Zero count, ones count, etc. |
+| 0x0A | ID_DATA | Audio data | Compressed PCM residuals |
+| 0x0B | ID_CORR | Correlation | Cross-correlation data |
+| 0x0C | ID_EXTRABITS | Extra bits | Additional LSB data |
+| 0x0D | ID_CHANINFO | Channel info | Channel ordering mask |
+| 0x0E | ID_DSD_DATA | DSD data | DSD audio (WavPack 5) |
+| 0x20 | ID_RIFF_HEADER | WAV header | Original RIFF header |
+| 0x21 | ID_RIFF_TRAILER | WAV trailer | Original RIFF chunks after audio |
+| 0x25 | ID_ALT_HEADER | Alt header | Alternative header |
+| 0x26 | ID_MD5 | MD5 checksum | 16-byte MD5 of audio |
+| 0x27 | ID_SAMPLE_RATE | Custom rate | Actual sample rate value |
+
+### D.3 Block Header Flags — Bit-Level Detail
+
+```
+32-bit Flags Field Layout:
+
+Bits 0-1:   Block type
+  00 = audio block
+  01 =RIFF wrapper block
+  10 = metadata block
+  11 = correction block (.wvc)
+
+Bit 2:       Hybrid mode (1=hybrid, 0=lossless)
+Bit 3:       Hybrid noise shaping (1=enabled)
+Bit 4:       Hybrid bitrate (1=bitrate mode)
+Bit 5:       Hybrid balance (1=enabled)
+Bit 6:       Cross-decorrelation (1=enabled)
+Bit 7:       Joint stereo (1=enabled)
+Bit 8:       Initial block (1=first block)
+Bit 9:       Final block (1=last block)
+
+Bits 10-15:  Reserved
+
+Bits 16-21:  Left shift for non-8-bit depths
+  20-bit: shift = 4
+  16-bit: shift = 0
+  24-bit: shift = 0
+
+Bits 22-25:  Sample rate index (see table)
+  0 = 6000 Hz
+  1 = 8000 Hz
+  2 = 9600 Hz
+  3 = 11025 Hz
+  4 = 12000 Hz
+  5 = 16000 Hz
+  6 = 22050 Hz
+  7 = 24000 Hz
+  8 = 32000 Hz
+  9 = 44100 Hz
+  10 = 48000 Hz
+  11 = 64000 Hz
+  12 = 88200 Hz
+  13 = 96000 Hz
+  14 = 192000 Hz
+  15 = custom (see ID_SAMPLE_RATE metadata)
+
+Bit 26:      Reserved
+Bit 27:      Float data (1=32-bit IEEE float)
+Bit 28:      Reserved
+Bit 29:      DSD data (1=DSD 1-bit PCM)
+Bit 30:      Int32 data (1=32-bit integer)
+Bit 31:      False stereo (1=block is mono with false stereo flag)
+```
+
+### D.4 Sample Rate Index Table (wv_rates)
+
+```c
+static const int wv_rates[16] = {
+     6000,   // index  0
+     8000,   // index  1
+     9600,   // index  2
+    11025,  // index  3
+    12000,  // index  4
+    16000,  // index  5
+    22050,  // index  6
+    24000,  // index  7
+    32000,  // index  8
+    44100,  // index  9
+    48000,  // index 10
+    64000,  // index 11
+    88200,  // index 12
+    96000,  // index 13
+   192000,  // index 14
+       0,   // index 15 = custom (see ID_SAMPLE_RATE)
+};
+```
+
+### D.5 Block Size Calculation
+
+```
+Maximum samples per block based on WavPack version and settings:
+
+WV_MAX_SAMPLES = 131072 (2^17)
+
+Block size formula:
+  block_samples = min(sample_rate / 2, WV_MAX_SAMPLES)
+
+Examples at 44100 Hz:
+  block_samples = min(44100/2, 131072) = 22050 samples
+  block_duration = 22050 / 44100 = 0.5 seconds
+
+Examples at 96000 Hz:
+  block_samples = min(96000/2, 131072) = 48000 samples
+  block_duration = 48000 / 96000 = 0.5 seconds
+
+Custom block sizes can be specified during encoding.
+```
+
+### D.6 Entropy Coding — Recursive Golomb Implementation
+
+```c
+// WavPack recursive Golomb coding pseudocode
+
+void encode_residual(int32_t residual, int *median) {
+    int m = *median;
+    int e = residual;
+
+    // Convert to unsigned representation
+    if (e < 0) {
+        e = (-e - 1);
+    }
+
+    // Encode magnitude using recursive Golomb
+    int quotient = e / m;
+    int remainder = e % m;
+
+    // Emit unary-coded quotient
+    for (int i = 0; i < quotient; i++) {
+        emit_bit(1);
+    }
+    emit_bit(0);  // Terminator
+
+    // Emit adjusted-binary remainder
+    emit_bits(remainder, get_k_for_m(m));
+
+    // Emit sign bit
+    emit_bit(residual < 0 ? 1 : 0);
+
+    // Update median
+    if (residual >= m) {
+        *median += (m + 127) / 128;
+    } else {
+        *median -= (m + 126) / 128;
+    }
+    if (*median < 1) *median = 1;
+}
+
+// Overflow protection: limit unary prefix to 15 bits
+// If quotient >= 16, emit 16 ones + Elias gamma code of quotient
+
+int decode_residual(int *median) {
+    // Decode unary prefix
+    int quotient = 0;
+    while (decode_bit()) {
+        quotient++;
+        if (quotient == 16) {
+            // Overflow protection: read Elias gamma code
+            quotient = decode_elias_gamma();
+            break;
+        }
+    }
+
+    // Decode remainder
+    int k = get_k_for_m(*median);
+    int remainder = decode_bits(k);
+
+    // Reconstruct magnitude
+    int e = quotient * (*median) + remainder;
+
+    // Decode sign
+    if (decode_bit()) {
+        e = -e - 1;
+    }
+
+    // Update median
+    if (e >= *median) {
+        *median += (*median + 127) / 128;
+    } else {
+        *median -= (*median + 126) / 128;
+    }
+    if (*median < 1) *median = 1;
+
+    return e;
+}
+```
+
+---
+
+## APPENDIX E: PERFORMANCE OPTIMIZATION GUIDE
+
+### E.1 Encoding Speed Optimization
+
+WavPack encoding can be optimized through several strategies:
+
+1. **Parallel encoding:** Use multiple threads for independent files
+   ```bash
+   # Encode files in parallel using GNU parallel
+   ls *.wav | parallel -j4 'wavpack -h {}'
+   ```
+
+2. **Block size tuning:** Smaller blocks = faster seek, less compression
+   - Default block size is sample_rate/2 (~0.5s)
+   - Smaller blocks (e.g., 11025 samples) = faster encode, worse compression
+   - Use `--block-size` option in reference encoder
+
+3. **Filter pass selection:** Fewer passes = faster encode
+   - Fast mode: 2 passes (fastest, least compression)
+   - Default mode: 5 passes (balanced)
+   - High mode: 16 passes (slowest, best compression)
+
+4. **Memory usage:** WavPack can use significant memory for high compression
+   - High compression modes may require 100+ MB RAM per thread
+   - Reduce memory by using smaller block sizes
+
+### E.2 Decoding Speed Optimization
+
+```bash
+# FFmpeg multithreaded decoding
+ffmpeg -i input.wv -c:a pcm_s16le -threads 8 output.wav
+
+# Use reference decoder for best performance
+wvunpack input.wv -o output.wav
+```
+
+### E.3 Compression Ratio Optimization
+
+For maximum compression:
+
+1. Use high compression mode: `-hh` or `-hx6`
+2. Enable MD5 verification: `-m` (enables additional validation)
+3. Use asymmetrical mode: `--asym` (better compression, slower)
+4. Optimize for mono: `--optimize-mono` (better mono compression)
+5. Use correct file format: AIFF/CAF sources store more metadata
+
+---
+
+## APPENDIX F: INTEGRATION WITH OTHER TOOLS
+
+### F.1 CueTools Integration
+
+CUETools can work with WavPack files:
+
+```bash
+# Verify WavPack file with CUETools
+CUETools.Fix.exe input.wv
+
+# Split by cuesheet using CUETools
+CUETools.Flac.exe -t cue=track.cue input.wv
+```
+
+### F.2 EAC (Exact Audio Copy) Integration
+
+EAC supports WavPack for CD ripping:
+
+```
+EAC Compression Options:
+1. Select "External Compression"
+2. Check "Use CRC check"
+3. Parameter 1: -h -m -w "Artist=%artist%" -w "Album=%albumtitle%"
+4. Parameter 2: -d "%discid%"
+5. Additional command line: -y "%numtracks%"
+6. Extension: .wv
+```
+
+### F.3 foobar2000 Integration
+
+foobar2000 has native WavPack support with correction file handling:
+
+- Enable "WV - hybrid lossless" decoder for .wvc support
+- Use Converter with tag writing enabled
+- ReplayGain scanning supported
+- Gapless playback supported
+
+### F.4 Sonique Plugin Integration
+
+Third-party plugins extend WavPack support:
+
+| Plugin | Platform | Features |
+|--------|----------|----------|
+| CoreWavPack | Windows | DirectShow filter for WavPack |
+| BASS library | Windows | WavPack plugin for audio apps |
+| LAMEPC | Windows | Integration with various players |
+
+---
+
 *File generated for: DBpoweramp-equivalent audio converter knowledge base*
 *Depth target: Complete implementation reference*
 *[NEEDS VERIFICATION] markers indicate claims requiring additional source confirmation*
