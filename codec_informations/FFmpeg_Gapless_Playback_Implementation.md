@@ -1056,8 +1056,598 @@ cmp source_raw.wav target_raw.wav && echo "BIT-IDENTICAL" || echo "DIFFERENT"
 - [ ] Create test files with known silence at boundaries
 - [ ] Verify no silence when concatenating gapless files
 - [ ] Test with players known to support gapless
-- [ ] Test with players that don't support gapless (fallback behavior)
+- [ ] Test with players that do not support gapless (fallback behavior)
 - [ ] Verify bit-exact reconstruction via framemd5 comparison
+
+---
+
+## 13. PLAYER-SPECIFIC GAPLESS SUPPORT
+
+### 13.1 Gapless Playback by Player
+
+| Player | MP3 | AAC/MP4 | Vorbis/OGG | FLAC | Notes |
+|--------|------|----------|-------------|------|-------|
+| Foobar2000 | Yes | Yes | Yes | Yes | Excellent support |
+| Winamp | Yes | Yes | Yes | Yes | Via LAME tag |
+| iTunes | Yes | Yes | Yes | Yes | Via iTunSMPB |
+| VLC | Yes | Yes | Yes | Yes | Full support |
+| MPD | Partial | Yes | Yes | Yes | Requires correct configuration |
+| MusicBee | Yes | Yes | Yes | Yes | Via LAME tag |
+| Amarok | Yes | Yes | Yes | Yes | |
+| Clementine | Yes | Yes | Yes | Yes | |
+| AIMP | Yes | Yes | Yes | Yes | |
+| JRiver | Yes | Yes | Yes | Yes | |
+| Spotify | N/A | Yes | No | No | Only OGG streaming |
+| Apple Music | Yes | Yes | N/A | Yes | Full ecosystem support |
+| Amazon Music | Yes | Yes | No | No | |
+| Roon | Yes | Yes | Yes | Yes | Full support |
+
+### 13.2 Web-Based Players
+
+| Player | MP3 | AAC | OGG | Notes |
+|--------|------|------|------|-------|
+| HTML5 Audio | No | Yes (Safari) | No | Browser-dependent |
+| Web Audio API | No | Yes | No | Browser-dependent |
+| Howler.js | No | Yes | No | Depends on browser |
+| MediaElement.js | No | Yes | No | Depends on browser |
+| jPlayer | No | Yes | No | Depends on browser |
+
+### 13.3 Car Audio and Embedded Systems
+
+| Device/Platform | Gapless Support | Notes |
+|----------------|----------------|-------|
+| Android Auto | Yes | Via Android MediaPlayer |
+| Apple CarPlay | Yes | Full support |
+| Generic USB Audio | Varies | Manufacturer-dependent |
+| DLNA/UPnP | Varies | Depends on renderer |
+| Bluetooth (SBC) | No | Bluetooth stack adds latency |
+| Bluetooth (LDAC/aptX) | No | Still adds latency |
+
+---
+
+## 14. ENCODER-SPECIFIC GAPLESS PARAMETERS
+
+### 14.1 LAME/MP3 Delay Parameters
+
+The LAME encoder adds specific amounts of delay and padding:
+
+| Parameter | Value (44.1kHz) | Value (48kHz) | Notes |
+|-----------|-----------------|---------------|-------|
+| Internal delay | 1056 samples | 1152 samples | LAME's encoder delay |
+| MDCT overlap | 528 samples | 576 samples | 50% window overlap compensation |
+| Frame boundary | 1 sample | 1 sample | Boundary adjustment |
+| Total start_pad | 1584 samples | 1728 samples | What goes in iTunSMPB |
+| End padding | 528 samples | 576 samples | What goes in iTunSMPB |
+| FFmpeg trailing_padding | -1 (computed) | -1 | end_pad minus LAME internal |
+
+The LAME delay of 1584 samples at 44.1kHz corresponds to approximately 35.9 milliseconds. This is the most common encoder delay in the MP3 ecosystem.
+
+### 14.2 Fraunhofer FDK AAC Delay Parameters
+
+FDK AAC delay varies by profile and configuration:
+
+| Profile | Delay (samples) | At 44.1kHz | At 48kHz | Notes |
+|---------|----------------|-------------|-----------|-------|
+| AAC-LC | 1024 | 23.2ms | 21.3ms | Standard AAC |
+| HE-AAC | 2048 | 46.4ms | 42.7ms | With SBR |
+| HE-AAC v2 | 2048 | 46.4ms | 42.7ms | With PS |
+| AAC-LD | 512 | 11.6ms | 10.7ms | Low delay |
+| AAC-ELD | 256 | 5.8ms | 5.3ms | Enhanced low delay |
+
+### 14.3 Vorbis/Opus Delay
+
+Vorbis and Opus use implicit delay through OGG granule positions:
+
+| Codec | Encoder Delay | Notes |
+|-------|-------------|-------|
+| Vorbis | 0 samples | Implicit via granule |
+| Opus | 120 samples (2.5ms) | OGG Opus spec |
+
+For Opus, the OGG Opus specification requires:
+- Pre-skip: 312 samples (at 48kHz) — stored in OpusHead header
+- This pre-skip is handled by the container, not by gapless metadata
+
+### 14.4 FLAC Delay
+
+FLAC does not add encoder delay because it uses linear prediction instead of MDCT:
+
+| Codec | Encoder Delay | Notes |
+|-------|-------------|-------|
+| FLAC | 0 samples | No transform padding |
+| ALAC | 0 samples | No transform padding |
+| WavPack | Variable | Depends on filter length |
+
+---
+
+## 15. CONTAINER-SPECIFIC GAPLESS IMPLEMENTATION
+
+### 15.1 MP3: iTunSMPB Parsing
+
+The iTunSMPB tag format stores gapless info as hex values:
+
+```
+iTunSMPB: 00000000 {start_pad:8h} {end_pad:8h} {total_valid:10h} 00000000 {offset:8h}
+```
+
+| Field | Offset | Format | Example | Meaning |
+|-------|--------|--------|---------|---------|
+| Version | 0 | 8 hex | 00000000 | Always zero |
+| start_pad | 9 | 8 hex | 00000B40 | 2880 decimal (FFmpeg) |
+| end_pad | 18 | 8 hex | 000001E0 | 480 decimal |
+| total_valid | 27 | 10 hex | 00000000000E2C40 | 925,120 samples |
+| Reserved | 38 | 8 hex | 00000000 | Always zero |
+| last_eight_offset | 47 | 8 hex | 00000000 | Offset to last 8 frames |
+
+FFmpeg's computation from iTunSMPB:
+```c
+// Compute actual delay from iTunSMPB
+start_pad = parsed_start_pad;
+end_pad_computed = parsed_end_pad - (528 + 1);  // Subtract LAME internal
+
+// Set codec context
+avctx->initial_padding = start_pad;
+avctx->trailing_padding = end_pad_computed;
+```
+
+### 15.2 MP4: Edit List Format
+
+MP4 edit lists define timeline mappings from media time to movie time:
+
+```
+Edit List Atom (edts):
+├── list_size (4 bytes)
+├── atom_type "edts" (4 bytes)
+└── Edit List Box (elst)
+    ├── elst_size (4 bytes)
+    ├── atom_type "elst" (4 bytes)
+    ├── version (1 byte)
+    ├── flags (3 bytes)
+    ├── entry_count (4 bytes)
+    └── entries[]
+        ├── segment_duration (8 bytes) — in movie timescale
+        ├── media_time (8 bytes) — in media timescale (-1 = empty)
+        └── media_rate (4 bytes) — playback speed (1.0 = normal)
+```
+
+For gapless, an edit list might specify:
+- media_time = initial_padding (skip encoder delay)
+- segment_duration = total_samples - initial_padding
+
+### 15.3 OGG: Granule Position Semantics
+
+OGG pages contain granule positions that define audio boundaries:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  OGG PAGE HEADER                                                │
+├────────────────────────────────────────────────────────────────┤
+│  Bytes 0-4:    Capture pattern (0x4F 0x67 0x67 0x53 0x00)  │
+│  Byte 5:        Stream structure version (1)                   │
+│  Byte 6:        Header type flag                              │
+│  Bytes 7-13:    Granule position (variable-length int)         │
+│  Bytes 14-17:   Serial number                                 │
+│  Bytes 18-21:   Page sequence number                          │
+│  Bytes 22-25:   CRC checksum                                  │
+│  Byte 26:       Number of segments                             │
+│  Bytes 27+:     Segment table                                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+For Vorbis audio, granule position represents the sample index at the END of the page. If the final page is partial, the granule position tells the decoder exactly where the audio ends, enabling implicit gapless playback.
+
+### 15.4 FLAC: STREAMINFO Fields
+
+FLAC's STREAMINFO block contains all the information needed for gapless playback:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  FLAC STREAMINFO BLOCK (fixed 34 bytes)                        │
+├────────────────────────────────────────────────────────────────┤
+│  Block header (4 bytes)                                        │
+│  ├── Block type = 0 (STREAMINFO)                             │
+│  └── Block length = 34                                        │
+│                                                                   │
+│  STREAMINFO body (34 bytes)                                   │
+│  ├── min_block_size (16 bits)                                 │
+│  ├── max_block_size (16 bits)                                 │
+│  ├── min_frame_size (24 bits)                                 │
+│  ├── max_frame_size (24 bits)                                 │
+│  ├── sample_rate (20 bits) [combined with channels/bits]      │
+│  ├── channels-1 (3 bits) [combined]                          │
+│  ├── bits_per_sample-1 (5 bits) [combined]                   │
+│  ├── total_samples (36 bits) [upper 4 bits of byte 13]       │
+│  └── MD5 signature (128 bits)                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+The `total_samples` field is a 36-bit value that tells exactly how many PCM samples are in the stream. Since FLAC adds no delay, this is the true audio length.
+
+---
+
+## 16. TESTING AND VERIFICATION
+
+### 16.1 Creating Test Signals
+
+```bash
+# Create a 1kHz sine wave, exactly 10 seconds
+ffmpeg -f lavfi -i "sine=frequency=1000:duration=10" \
+  -c:a pcm_s16le -ar 44100 test_sine.wav
+
+# Create a sweep tone (for frequency response testing)
+ffmpeg -f lavfi -i "sine=frequency=100:t=0, sine=frequency=10000:t=10, concat=n=2:v=0:a=1" \
+  -c:a pcm_s16le -ar 44100 test_sweep.wav
+
+# Create silence (for testing silence handling)
+ffmpeg -f lavfi -i "anullsrc=r=44100:cl=stereo" -t 5 \
+  -c:a pcm_s16le test_silence.wav
+
+# Create a test with known marker tones
+ffmpeg -f lavfi -i "sine=frequency=1000:duration=3, sine=frequency=1000:duration=0.05, sine=frequency=1000:duration=5" \
+  -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" \
+  -map "[outa]" -c:a pcm_s16le -ar 44100 test_markers.wav
+```
+
+### 16.2 Detecting Silence at Boundaries
+
+```bash
+# Decode and check for silence at start
+ffmpeg -i test_encoded.mp3 -c:a pcm_s16le -ar 44100 decoded.wav
+
+# Check first 100ms for non-zero samples
+ffmpeg -i decoded.wav -ss 0 -t 0.1 -af "astats=metadata=1:reset=0" -f null -
+
+# Check last 100ms for non-zero samples
+ffmpeg -i decoded.wav -ss 9.9 -t 0.1 -af "astats=metadata=1:reset=0" -f null -
+
+# Measure RMS level at boundaries
+ffmpeg -i decoded.wav -af "atrim=0:0.050,astats" -f null -
+
+# Automated silence detection
+ffmpeg -i decoded.wav -af "silencedetect=n=-50dB:d=0.050" -f null - 2>&1 | \
+  grep silence_duration
+```
+
+### 16.3 Bit-Exact Comparison
+
+```bash
+# Generate framemd5 for both
+ffmpeg -i original.wav -f framemd5 original.md5
+ffmpeg -i decoded.wav -f framemd5 decoded.md5
+
+# Compare
+diff original.md5 decoded.md5 && echo "BIT-IDENTICAL" || echo "DIFFERENT"
+
+# Or use cmp for byte-level comparison
+cmp -l original.wav decoded.wav | head -20
+
+# Compare specific regions
+dd if=original.wav bs=4 skip=3528 count=100 2>/dev/null | md5sum
+dd if=decoded.wav bs=4 skip=3528 count=100 2>/dev/null | md5sum
+```
+
+### 16.4 Player Testing Protocol
+
+1. Create a gapless album with known boundaries
+2. Encode with gapless metadata
+3. Decode back and verify no silence at boundaries
+4. Test on player with known gapless support (Foobar2000)
+5. Test on player with unknown gapless support
+6. Compare playback output between gapless and non-gapless versions
+
+```bash
+# Create gapless test album
+mkdir -p test_album
+ffmpeg -f lavfi -i "sine=frequency=440:duration=5" test_album/track1.wav
+ffmpeg -f lavfi -i "sine=frequency=880:duration=5" test_album/track2.wav
+ffmpeg -f lavfi -i "sine=frequency=1320:duration=5" test_album/track3.wav
+
+# Encode to MP3 with gapless
+for f in test_album/*.wav; do
+  ffmpeg -i "$f" -c:a libmp3lame -q:a 2 "${f%.wav}.mp3"
+done
+
+# Verify iTunSMPB present
+ffprobe -v quiet -show_entries format_tags=iTunSMPB test_album/track1.mp3
+
+# Decode and check boundaries
+ffmpeg -i test_album/track1.mp3 -c:a pcm_s16le track1_decoded.wav
+ffmpeg -i test_album/track2.mp3 -c:a pcm_s16le track2_decoded.wav
+
+# Concatenate and check for gap
+cat test_album/track1_decoded.wav test_album/track2_decoded.wav > combined.wav
+ffmpeg -i combined.wav -af "silencedetect=n=-50dB:d=0.010" -f null - 2>&1 | \
+  grep silence_end
+```
+
+---
+
+## 17. HISTORICAL CONTEXT: GAPLESS STANDARDS
+
+### 17.1 Evolution of Gapless Metadata
+
+| Year | Development | Significance |
+|------|------------|-------------|
+| 1993 | MPEG-1 audio finalized | Encoder delay problem first documented |
+| 1998 | LAME adds info tag | First MP3 gapless support |
+| 2003 | Apple iTunSMPB | Standardized MP3 gapless |
+| 2004 | Vorbis gapless spec | OGG granule position standardized |
+| 2007 | FLAC STREAMINFO | Native FLAC gapless support |
+| 2010 | Opus specification | Minimal delay design |
+| 2017 | FFmpeg iTunSMPB | Open-source gapless parsing |
+| 2022 | FFmpeg improved MP3 gapless | Better delay computation |
+
+### 17.2 iTunSMPB Origin
+
+Apple introduced iTunSMPB to solve the MP3 gapless problem:
+
+1. When encoding, LAME outputs the encoder delay and padding
+2. iTunes writes these to the iTunSMPB tag in hexadecimal
+3. When playing, iTunes reads the tag and skips the delay samples
+4. This enables gapless playback even though MP3 has no native gapless support
+
+The format uses hexadecimal because:
+- Efficient storage (8 hex chars = 32 bits per field)
+- No localization concerns
+- Easy to parse with sscanf
+
+### 17.3 Xiph/Vorbis Approach
+
+Xiph took a different approach for Vorbis:
+
+1. Vorbis I specification includes gapless requirements
+2. OGG container provides granule positions
+3. Players calculate actual audio length from granule position
+4. No additional metadata needed
+
+This approach is cleaner because:
+- Built into the format specification
+- No external tag dependency
+- Automatically handled by all compliant decoders
+
+### 17.4 Why MP3 Has No Native Gapless
+
+MP3 was designed in 1993 before gapless playback was a concern:
+
+- Fixed frame sizes (1152 samples per frame)
+- No native way to store total sample count
+- ID3 tags were added after the fact
+- The format predates most digital audio players
+
+This is why MP3 requires external metadata (iTunSMPB) for gapless playback, unlike formats designed after the gapless problem was recognized.
+
+---
+
+## 18. C API IMPLEMENTATION EXAMPLES
+
+### 18.1 Reading Gapless Info from MP3
+
+```c
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+
+int read_mp3_gapless(const char *filename,
+                     int64_t *initial_padding,
+                     int64_t *trailing_padding) {
+    AVFormatContext *fmt = NULL;
+    int ret = avformat_open_input(&fmt, filename, NULL, NULL);
+    if (ret < 0) return ret;
+
+    avformat_find_stream_info(fmt, NULL);
+    int idx = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (idx < 0) { avformat_close_input(&fmt); return -1; }
+
+    AVStream *st = fmt->streams[idx];
+    AVDictionaryEntry *tag = av_dict_get(fmt->metadata, "iTunSMPB", NULL, 0);
+
+    if (tag) {
+        // Parse iTunSMPB: "00000000 {start} {end} {total} 00000000 {offset}"
+        uint32_t zero1, start_pad, end_pad, zero2;
+        uint64_t total, last_offset;
+        sscanf(tag->value,
+               "%"PRIx32" %"PRIx32" %"PRIx32" %"PRIx64" %"PRIx32" %"PRIx64,
+               &zero1, &start_pad, &end_pad, &total, &zero2, &last_offset);
+        *initial_padding = start_pad;
+        *trailing_padding = end_pad - (528 + 1);  // LAME internal
+    } else {
+        // No iTunSMPB — use defaults
+        *initial_padding = 1584;  // LAME default
+        *trailing_padding = 0;
+    }
+
+    avformat_close_input(&fmt);
+    return 0;
+}
+```
+
+### 18.2 Writing Gapless Info to AAC
+
+```c
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+
+int encode_aac_gapless(const char *input,
+                        const char *output,
+                        int64_t initial_padding) {
+    AVFormatContext *ifmt = NULL, *ofmt = NULL;
+    avformat_open_input(&ifmt, input, NULL, NULL);
+    avformat_find_stream_info(ifmt, NULL);
+
+    avformat_alloc_output_context2(&ofmt, NULL, "m4a", output);
+    int idx = av_find_best_stream(ifmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    AVStream *ist = ifmt->streams[idx];
+
+    AVCodecContext *dec_ctx = avcodec_alloc_context3(
+        avcodec_find_decoder(ist->codecpar->codec_id));
+    avcodec_parameters_to_context(dec_ctx, ist->codecpar);
+    avcodec_open2(dec_ctx, avcodec_find_decoder(ist->codecpar->codec_id), NULL);
+
+    AVCodec *enc = avcodec_find_encoder_by_name("libfdk_aac");
+    AVCodecContext *enc_ctx = avcodec_alloc_context3(enc);
+    enc_ctx->sample_rate = dec_ctx->sample_rate;
+    av_channel_layout_copy(&enc_ctx->ch_layout, &dec_ctx->ch_layout);
+    enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16P;
+    enc_ctx->bit_rate = 256000;
+
+    // Set gapless delay info
+    enc_ctx->initial_padding = initial_padding;
+
+    avcodec_open2(enc_ctx, enc, NULL);
+
+    AVStream *ost = avformat_new_stream(ofmt, enc);
+    avcodec_parameters_from_context(ost->codecpar, enc_ctx);
+    avio_open(&ofmt->pb, output, AVIO_FLAG_WRITE);
+    avformat_write_header(ofmt, NULL);
+
+    // Encode loop (omitted for brevity)
+
+    av_write_trailer(ofmt);
+    avformat_free_context(ofmt);
+    avformat_close_input(&ifmt);
+    return 0;
+}
+```
+
+### 18.3 Gapless Seeking in Playback
+
+```c
+#include <libavformat/avformat.h>
+
+int gapless_seek_and_decode(const char *filename,
+                             int64_t seek_target,
+                             int64_t initial_padding) {
+    AVFormatContext *fmt = avformat_alloc_context();
+    avformat_open_input(&fmt, filename, NULL, NULL);
+    avformat_find_stream_info(fmt, NULL);
+    int idx = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    AVStream *st = fmt->streams[idx];
+
+    // Compute seek point accounting for initial padding
+    int64_t skip_time = av_rescale_q(initial_padding,
+                                      (AVRational){1, st->codecpar->sample_rate},
+                                      st->time_base);
+    int64_t adjusted_target = seek_target + skip_time;
+
+    // Seek with backward flag
+    av_seek_frame(fmt, idx, adjusted_target, AVSEEK_FLAG_BACKWARD);
+
+    // Now decode — first frames are delay, skip them
+    int64_t samples_skipped = 0;
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+    AVCodecContext *dec_ctx = avcodec_alloc_context3(
+        avcodec_find_decoder(st->codecpar->codec_id));
+    avcodec_parameters_to_context(dec_ctx, st->codecpar);
+    avcodec_open2(dec_ctx, avcodec_find_decoder(st->codecpar->codec_id), NULL);
+
+    while (av_read_frame(fmt, pkt) >= 0) {
+        if (pkt->stream_index == idx) {
+            avcodec_send_packet(dec_ctx, pkt);
+            while (avcodec_receive_frame(dec_ctx, frame) == 0) {
+                if (samples_skipped < initial_padding) {
+                    // Skip delay samples
+                    int skip = FFMIN(initial_padding - samples_skipped,
+                                     frame->nb_samples);
+                    samples_skipped += skip;
+                } else {
+                    // Process real audio samples
+                    process_audio(frame);
+                }
+                av_frame_unref(frame);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec_ctx);
+    avformat_close_input(&fmt);
+    return 0;
+}
+```
+
+---
+
+## 19. TROUBLESHOOTING COMMON GAPLESS ISSUES
+
+### 19.1 Issue: Audible Gap Between Tracks
+
+| Cause | Diagnosis | Fix |
+|-------|----------|-----|
+| Player doesn't support gapless | Test with Foobar2000 | Use gapless-capable player |
+| MP3 missing iTunSMPB | Check with ffprobe | Re-encode or tag manually |
+| AAC missing edit list | Check with mediainfo | Use `-movflags +gaplessinfo` |
+| OGG wrong granule position | Check with ogginfo | Verify encoder is correct |
+| Different delay per track | Check each track's delay | Normalize delays |
+| Pre-existing silence in source | Check source file | Trim silence before encoding |
+
+### 19.2 Issue: Click/Pop at Track Boundaries
+
+| Cause | Diagnosis | Fix |
+|-------|----------|-----|
+| Incorrect delay value | Compare with expected | Use correct delay value |
+| Sample rate mismatch | Check rates | Resample to common rate |
+| End padding not trimmed | Check trailing samples | Trim trailing_padding |
+| Player seeking past boundary | Test with gapless player | Use correct player |
+| Format conversion losing delay | Check FFmpeg version | Update FFmpeg |
+
+### 19.3 Issue: First Track Starts Late
+
+| Cause | Diagnosis | Fix |
+|-------|----------|-----|
+| Initial padding too large | Check actual vs expected | Use correct initial_padding |
+| Player not respecting delay | Test with known-good player | Use different player |
+| iTunSMPB corrupted | Check hex values | Re-encode or fix tag |
+| Edit list incorrect | Check MP4 atom | Rebuild with correct metadata |
+
+### 19.4 Issue: Last Track Ends Early
+
+| Cause | Diagnosis | Fix |
+|-------|----------|-----|
+| Trailing padding not honored | Check trailing_padding | Set correctly |
+| Player trimming incorrectly | Test with different player | Use correct player |
+| Container encoding error | Check with ffprobe | Re-encode properly |
+| Truncation during conversion | Check output size | Verify complete output |
+
+---
+
+## 20. APPENDIX: MATH REFERENCE
+
+### 20.1 Delay to Milliseconds
+
+```bash
+# Formula: delay_ms = (samples / sample_rate) * 1000
+# Example: 1584 samples at 44.1kHz
+#   = (1584 / 44100) * 1000
+#   = 35.92 ms
+
+# Common conversions:
+#   LAME delay: 1584 samples @ 44.1kHz = 35.92 ms
+#   LAME delay: 1728 samples @ 48kHz = 36.00 ms
+#   FDK AAC: 1024 samples @ 44.1kHz = 23.22 ms
+#   FDK AAC: 1024 samples @ 48kHz = 21.33 ms
+#   Opus: 120 samples @ 48kHz = 2.50 ms
+```
+
+### 20.2 Sample to Byte Offset
+
+```bash
+# Formula: byte_offset = samples * channels * (bits_per_sample / 8)
+# Example: 1584 samples, stereo, 16-bit
+#   = 1584 * 2 * 2
+#   = 6336 bytes
+```
+
+### 20.3 Total File Samples from iTunSMPB
+
+```bash
+# Formula: total_samples = total_valid + initial_padding + trailing_padding
+# Example:
+#   total_valid = 925120
+#   initial_padding = 2880 (from iTunSMPB start_pad)
+#   trailing_padding = 479 (from iTunSMPB end_pad - 529)
+#   total = 925120 + 2880 + 479 = 928479 samples
+```
 
 ---
 

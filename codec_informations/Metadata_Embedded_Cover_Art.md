@@ -844,7 +844,830 @@ FLAC METADATA_BLOCK_PICTURE (type 6):
 
 ---
 
+## 14. ADVANCED COVER ART OPERATIONS
+
+### 14.1 Converting Between Cover Art Formats
+
+**FLAC PICTURE → MP4 covr conversion:**
+
+```python
+import struct
+
+def flac_picture_to_mp4_covr(flac_picture_data):
+    """Convert FLAC METADATA_BLOCK_PICTURE to MP4 covr data atom."""
+    offset = 0
+
+    # Parse FLAC picture block
+    picture_type = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    mime_len = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    mime = flac_picture_data[offset:offset+mime_len].decode('ascii'); offset += mime_len
+    desc_len = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    desc = flac_picture_data[offset:offset+desc_len].decode('utf-8', errors='replace'); offset += desc_len
+    width = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    height = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    depth = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    colors = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    image_len = struct.unpack('>I', flac_picture_data[offset:offset+4])[0]; offset += 4
+    image_data = flac_picture_data[offset:offset+image_len]
+
+    # Build MP4 data atom
+    if mime == 'image/jpeg':
+        data_type = 0x0D  # JPEG
+    elif mime == 'image/png':
+        data_type = 0x0E  # PNG
+    else:
+        raise ValueError(f"Unsupported MIME type: {mime}")
+
+    atom = bytearray()
+    atom += struct.pack('>I', 8 + len(image_data))  # Atom size
+    atom += b'data'  # Atom type
+    atom += struct.pack('>I', 0x00000000)  # Reserved
+    atom += struct.pack('>H', data_type)  # Data type
+    atom += struct.pack('>H', 0x0000)  # Reserved
+    atom += image_data
+
+    return bytes(atom)
+```
+
+**ID3v2 APIC → FLAC PICTURE conversion:**
+
+```python
+def apic_to_flac_picture(apic_frame_body, mime_type, description,
+                          picture_type, width, height, depth, colors):
+    """Convert ID3v2 APIC frame body to FLAC METADATA_BLOCK_PICTURE."""
+    picture_block = bytearray()
+    picture_block += struct.pack('>I', picture_type)  # Picture type
+    picture_block += struct.pack('>I', len(mime_type))  # MIME length
+    picture_block += mime_type.encode('ascii')  # MIME type
+    picture_block += struct.pack('>I', len(description))  # Description length
+    picture_block += description.encode('utf-8')  # Description
+    picture_block += struct.pack('>I', width)  # Width
+    picture_block += struct.pack('>I', height)  # Height
+    picture_block += struct.pack('>I', depth)  # Color depth
+    picture_block += struct.pack('>I', colors)  # Colors used
+    picture_block += struct.pack('>I', len(apic_frame_body))  # Image data length
+    picture_block += apic_frame_body  # Image data
+    return bytes(picture_block)
+```
+
+### 14.2 Batch Cover Art Operations
+
+```bash
+#!/bin/bash
+# Extract cover art from all FLAC files and save as folder.jpg
+
+for f in *.flac; do
+    ffmpeg -y -i "$f" -an -codec:v copy "cover_$(basename "$f" .flac).jpg" 2>/dev/null
+    # Use first found cover as folder.jpg
+    if [ -f "cover_$(basename "$f" .flac).jpg" ] && [ ! -f "folder.jpg" ]; then
+        cp "cover_$(basename "$f" .flac).jpg" "folder.jpg"
+    fi
+done
+
+# Clean up individual covers
+rm -f cover_*.jpg
+```
+
+```python
+# Python batch processing
+from pathlib import Path
+import subprocess
+
+def embed_cover_to_all(folder_path, cover_image):
+    """Embed cover art into all audio files in a folder."""
+    folder = Path(folder_path)
+    cover = Path(cover_image)
+
+    for audio_file in folder.glob('*.flac'):
+        subprocess.run([
+            'ffmpeg', '-y', '-i', str(audio_file),
+            '-i', str(cover),
+            '-c', 'copy',
+            '-map', '0:a', '-map', '1:v',
+            '-metadata:s:v', 'title=Front cover',
+            '-metadata:s:v', 'comment=Cover (front)',
+            '-disposition:v', 'attached_pic',
+            str(audio_file.with_suffix('.tmp')),
+        ], check=True)
+        audio_file.with_suffix('.tmp').replace(audio_file)
+```
+
+### 14.3 Resizing Large Cover Art
+
+```bash
+# Using ImageMagick to resize cover art for optimal quality/size
+# Create multiple sizes for different purposes
+
+# Full quality (for archival)
+convert input.png \
+  -resize 2000x2000\> \
+  -quality 90 \
+  -sampling-factor 2x2 \
+  cover_full.jpg
+
+# Medium quality (for general use)
+convert input.png \
+  -resize 600x600\> \
+  -quality 85 \
+  -sampling-factor 2x2 \
+  cover_medium.jpg
+
+# Thumbnail (for quick browsing)
+convert input.png \
+  -resize 160x160\> \
+  -quality 80 \
+  cover_thumb.jpg
+
+# Optimal FFmpeg-compatible JPEG settings:
+# -colorspace sRGB
+# -sampling-factor 2x2 (4:2:0 chroma subsampling for smaller file)
+# -quality 85 (balance quality/size)
+# -interlace Plane (progressive JPEG)
+```
+
+### 14.4 Verifying Cover Art Integrity
+
+```bash
+# Verify JPEG is valid
+ffmpeg -v error -i cover.jpg -f null - 2>&1 | grep -i error
+
+# Verify PNG is valid
+ffmpeg -v error -i cover.png -f null - 2>&1 | grep -i error
+
+# Check image dimensions and format
+ffprobe -v quiet -show_entries stream=width,height,codec_name \
+  -of default=noprint_wrappers=1 cover.jpg
+
+# Check file size
+ls -la cover.jpg
+
+# Verify cover art with kid3
+kid3-cli -c "get" input.flac | grep -i picture
+```
+
+---
+
+## 15. COVER ART IN STREAMING SERVICES
+
+### 15.1 Streaming Service Requirements
+
+| Service | Format | Max Size | Max Dimensions | Notes |
+|---------|--------|----------|---------------|-------|
+| Spotify | JPEG | 5 MB | 4096×4096 | Must be embedded or via API |
+| Apple Music | JPEG/PNG | 10 MB | 6000×6000 | Embed in AAC or ALAC |
+| YouTube Music | JPEG | 5 MB | 4096×4096 | Via API upload |
+| Amazon Music | JPEG | 5 MB | 4000×4000 | Embed or via API |
+| Tidal | JPEG/PNG | 5 MB | 4096×4096 | Embed in source file |
+| Deezer | JPEG | 5 MB | 4000×4000 | Via API or embed |
+
+### 15.2 Streaming Cover Art Best Practices
+
+1. **Resolution:** 3000×3000 pixels is the sweet spot for most services
+2. **Format:** JPEG at 85–90% quality provides best balance
+3. **Color space:** sRGB (most players don't support wide-gamut cover art)
+4. **Embedded:** Always embed cover art in the source file
+5. **Separate upload:** Also upload to the streaming platform's API/portal
+6. **Front cover:** Always use picture type 3 (Front cover) as primary
+
+### 15.3 Cover Art Metadata for Streaming
+
+When delivering to streaming services, include:
+- **Title/Description:** "Front cover" or album name
+- **Copyright:** Include if applicable
+- **Dimensions:** Ensure metadata matches actual image dimensions
+- **Color depth:** 24-bit (JPEG RGB) recommended
+
+### 15.4 Common Streaming Artwork Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| Artwork not appearing | Missing or incorrect MIME type | Set correct MIME type |
+| Artwork rejected | File too large | Resize to < 5 MB |
+| Artwork rejected | Dimensions too large | Resize to < 4096×4096 |
+| Artwork rejected | Invalid JPEG (truncated) | Re-encode from source |
+| Artwork blurry | Resolution too low | Use 1000×1000 minimum |
+| Artwork cropped | Aspect ratio mismatch | Use square images |
+
+---
+
+## 16. COVER ART ACCESSIBILITY
+
+### 16.1 Alt Text for Cover Art
+
+Currently, no audio format supports alt text descriptions for cover art (for visually impaired users). However:
+- The description field in APIC/PICTURE can serve as a basic description
+- MusicBrainz Picard uses the description field for the cover art comment
+- Some metadata editors allow storing descriptive text
+
+### 16.2 Accessible Audio Description
+
+For music services, accessibility is typically handled at the application level:
+- Screen readers can read song titles and artist names (metadata)
+- Cover art descriptions can be provided via separate APIs
+- This is a gap in current audio metadata standards
+
+---
+
+## 17. COVER ART FORMATS DEEP DIVE
+
+### 17.1 JPEG/JFIF Technical Details
+
+**JPEG marker sequence:**
+```
+FF D8  (SOI - Start Of Image)
+FF E0  (APP0 - JFIF marker)
+  ... JFIF data ...
+FF E1  (APP1 - EXIF/XMP metadata, optional)
+  ... EXIF/XMP data ...
+FF DA  (SOS - Start Of Scan)
+  ... compressed image data ...
+FF D9  (EOI - End Of Image)
+```
+
+**JFIF (JPEG File Interchange Format) APP0 marker:**
+```
+Bytes 0-1: APP0 marker (FF E0)
+Bytes 2-3: Length (total APP0 length)
+Bytes 4-7: Identifier "JFIF\0"
+Bytes 8-9: Version (e.g., 01 02 = 1.2)
+Byte 10:   Units (0=no units, 1=inch, 2=cm)
+Bytes 11-12: X density
+Bytes 13-14: Y density
+Byte 15:   Thumbnail width (0 if no thumbnail)
+Byte 16:   Thumbnail height
+Bytes 17+: Thumbnail data (optional)
+```
+
+**Color space:** JPEG/JFIF uses YCbCr (Y' = luma, Cb/Cr = chroma). Cover art should use sRGB color space, which JFIF specifies via the marker structure.
+
+### 17.2 PNG Technical Details
+
+**PNG chunks:**
+```
+89 50 4E 47 0D 0A 1A 0A  (PNG signature)
+IHDR chunk (image header)
+PLTE chunk (palette, optional)
+IDAT chunks (image data, one or more)
+IEND chunk (end of image)
+```
+
+**IHDR chunk:**
+```
+Length: 13 bytes
+Type: "IHDR"
+Width: 4 bytes (unsigned int)
+Height: 4 bytes
+Bit depth: 1 byte (1, 2, 4, 8, or 16)
+Color type: 1 byte
+  0 = grayscale
+  2 = RGB
+  3 = palette
+  4 = grayscale + alpha
+  6 = RGBA
+Compression: 1 byte (always 0 = deflate)
+Filter: 1 byte (always 0 = adaptive)
+Interlace: 1 byte (0=no interlace, 1=Adam7)
+```
+
+**PNG for cover art:** Most cover art is RGB (color type 2) or RGBA (color type 6, for transparency). Bit depth 8 is standard.
+
+### 17.3 WebP Support
+
+Some newer containers (WebM, newer MP4 muxers) support WebP as cover art:
+```bash
+# FFmpeg can extract WebP as cover art
+ffmpeg -i input.webm -an -codec:v copy cover.webp
+```
+
+WebP offers:
+- Better compression than JPEG at equivalent quality
+- Lossless mode available
+- Alpha channel support (unlike JPEG)
+- Not universally supported in all audio players
+
+### 17.4 HEIF/HEIC Support
+
+Apple devices may produce HEIF/HEIC cover art. Most audio players do not support HEIF cover art:
+- Convert to JPEG before embedding
+- Use ImageMagick: `convert input.heic cover.jpg`
+
+---
+
+## 18. COVER ART IN SPECIFIC AUDIO FORMATS
+
+### 18.1 WavPack Cover Art
+
+WavPack (.wv) supports embedded cover art via a special metadata chunk:
+```bash
+# Embed cover art in WavPack
+wvtag -i cover.jpg album.wv
+# Extract cover art
+wvtag -r album.wv
+```
+
+### 18.2 TAK Cover Art
+
+TAK (.tak) supports embedded pictures via a dedicated metadata field:
+```bash
+# TAK Tools for tag manipulation
+takcreator -tags "TITLE=Track" input.wav output.tak
+takcreator -addcover cover.jpg output.tak
+```
+
+### 18.3 OptimFROG Cover Art
+
+OptimFROG (.ofr, .ofs) supports ID3v2 tags for cover art when saved as AFOB format.
+
+### 18.4 Musepack Cover Art
+
+Musepack (.mpc) uses SV8 metadata with APIC-equivalent frames.
+
+### 18.5 AMR Cover Art
+
+AMR files (.amr) do not support embedded cover art. Cover art must be delivered as a separate sidecar file.
+
+### 18.6 DTS Coherent Acoustics Cover Art
+
+DTS-CD and DTS audio files typically store cover art in a separate ID3v2 header before the DTS data.
+
+---
+
+## 19. COVER ART AND MUSIC RECOGNITION
+
+### 19.1 Cover Art Fingerprinting
+
+Music recognition services (Shazam, SoundHound) use audio fingerprinting, not cover art. However:
+- Cover art helps users confirm the correct match visually
+- Inconsistent cover art across releases can confuse users
+- Some Gracenote/CDDB databases use cover art as a matching signal
+
+### 19.2 MusicBrainz Cover Art Archive
+
+MusicBrainz maintains a Cover Art Archive (coverartarchive.org):
+- Hosts cover art for releases in their database
+- Provides API for fetching cover art
+- Artist can upload high-resolution images
+- CDN-delivered for fast access
+
+### 19.3 Cover Art Licensing
+
+Cover art has complex copyright issues:
+- Album covers are typically copyrighted by the label/publisher
+- Embedding in digital files may require license
+- Some artists/designers retain rights
+- Stock photo licenses may cover some covers
+
+---
+
+## 20. COVER ART QUALITY ASSESSMENT
+
+### 20.1 Quality Scoring
+
+| Factor | Weight | Assessment Criteria |
+|--------|--------|-------------------|
+| Resolution | 30% | ≥ 1000×1000 = excellent, 500–1000 = good, < 500 = poor |
+| Compression quality | 25% | JPEG quality ≥ 85 = excellent, 70–85 = good, < 70 = poor |
+| Color accuracy | 20% | Matches original artwork |
+| Crop correctness | 15% | Full cover visible, no truncation |
+| File format | 10% | JPEG or PNG preferred |
+
+### 20.2 Common Cover Art Quality Problems
+
+| Problem | Cause | Impact |
+|---------|-------|--------|
+| Pixelation | Low resolution, upscaled | Blurry appearance |
+| Compression artifacts | Low JPEG quality | Blocking, color banding |
+| Wrong colors | CMYK source saved as sRGB | Colors appear off |
+| Cropped edges | Scanned at angle | Missing content |
+| Text unreadable | Resolution too low | Quality perception |
+| Visible barcode | Poor source image | Unprofessional appearance |
+
+### 20.3 Recommended Quality Workflow
+
+```
+1. Acquire highest resolution source available
+   ├── Master artwork file from label
+   ├── High-res scan of physical CD booklet
+   └── Professional photography
+
+2. Pre-process
+   ├── Convert to RGB color space
+   ├── Correct aspect ratio to square
+   ├── Remove extraneous content
+   └── Crop to square if needed
+
+3. Export at target quality
+   ├── Format: JPEG (photos) or PNG (graphics)
+   ├── Size: 3000×3000 pixels maximum
+   ├── Quality: 85–90 for JPEG
+   └── File size: under 5 MB
+
+4. Verify
+   ├── Open in image viewer at actual size
+   ├── Check for compression artifacts
+   └── Verify colors match original
+```
+
+---
+
+## 21. APPENDIX: COVER ART QUICK REFERENCE
+
+### 21.1 Format Support Matrix
+
+| Container | Supports Embedded | Format | Multiple | FFmpeg |
+|-----------|----------------|--------|---------|--------|
+| MP3 | Yes | JPEG, PNG | Yes | ✓ |
+| FLAC | Yes | JPEG, PNG | Yes | ✓ |
+| OGG Vorbis | Yes | JPEG, PNG | Yes | ✓ |
+| Opus | Yes | JPEG, PNG | Yes | ✓ |
+| AAC (MP4) | Yes | JPEG, PNG | Yes | ✓ |
+| ALAC (MP4) | Yes | JPEG, PNG | Yes | ✓ |
+| WAV | No | — | — | ✗ |
+| AIFF | Yes | JPEG, PNG | Yes | ✓ |
+| WMA | Yes | JPEG, PNG | Yes | ✓ |
+| DSF | Yes | JPEG, PNG | Yes | ✓ |
+| Matroska | Yes | Any image | Yes | ✓ |
+| WebM | Yes | JPEG, PNG | Yes | ✓ |
+
+### 21.2 Recommended Cover Art Settings
+
+| Use Case | Resolution | Format | Quality | Size |
+|----------|------------|--------|---------|------|
+| Streaming | 3000×3000 | JPEG | 90% | 1–3 MB |
+| CD distribution | 1200×1200 | JPEG | 85% | 200–500 KB |
+| Archive master | 3000×3000 | PNG | lossless | 5–20 MB |
+| Portable player | 600×600 | JPEG | 80% | 50–100 KB |
+| Car audio | 500×500 | JPEG | 80% | 30–80 KB |
+
+### 21.3 Troubleshooting Cover Art
+
+| Problem | Solution |
+|---------|---------|
+| Cover not showing in player | Verify picture type 3 (front cover) |
+| Cover shows in some players but not others | Check format compatibility |
+| Multiple covers showing wrong one | Set disposition:attached_pic |
+| Cover appears blank in iTunes | Check MIME type is correct |
+| Cover appears in browser but not app | Some apps require exact picture type |
+| Large file size from cover | Resize and re-compress |
+
+---
+
+## 22. COVER ART IN SPECIFIC ECOSYSTEMS
+
+### 22.1 iTunes/Apple Music Cover Art
+
+iTunes and Apple Music display cover art embedded in:
+- MP3 files (ID3v2 APIC)
+- AAC/M4A files (MP4 covr atom)
+- ALAC files (MP4 covr atom)
+- Audio books (MP4/M4B)
+
+**iTunes-specific behavior:**
+- Prefers picture type 0x03 (front cover)
+- Will display the first APIC if no type 3 is present
+- JPEG preferred over PNG for compatibility
+- Minimum recommended size: 600×600 pixels
+- Maximum accepted size: 6000×6000 pixels
+- Cover art is cached at multiple resolutions
+
+**iTunes artwork extraction:**
+```bash
+# Extract artwork from iTunes-purchased files
+ffmpeg -i "iTunes file.m4a" -an -codec:v copy cover.jpg
+
+# Note: Some iTunes Plus files have DRM that prevents extraction
+```
+
+### 22.2 Spotify Cover Art
+
+Spotify displays cover art via:
+1. Embedded cover art in the audio file
+2. Cover art from the Spotify CDN (uploaded during distribution)
+3. Cover art from MusicBrainz Cover Art Archive
+
+**Spotify behavior:**
+- Embedded cover art in uploaded files is used if no CDN art is available
+- CDN art takes priority over embedded art
+- Supports JPEG and PNG
+- Preferred size: 640×640 to 2048×2048 pixels
+- Album art is used for:
+  - Spotify app display
+  - Voice assistant queries ("play [album name] by [artist]")
+  - Spotify Wrapped
+
+### 22.3 Google Play Music / YouTube Music
+
+Google/YouTube music services:
+- Display embedded cover art from uploaded files
+- Use CDN-hosted art for distributed tracks
+- Support JPEG and PNG
+- Preferred size: 512×512 minimum, 1600×1600 recommended
+- Some services require square images (1:1 aspect ratio)
+
+### 22.4 Amazon Music
+
+Amazon Music:
+- Supports embedded cover art in MP3, FLAC, AAC
+- Uses embedded art for locally stored files
+- CDN art for streaming catalog
+- JPEG preferred, PNG supported
+- Size requirement: 500×500 minimum
+
+### 22.5 Tidal
+
+Tidal:
+- Primarily uses CDN-hosted cover art
+- Embedded art supported for uploaded files
+- JPEG and PNG supported
+- Preferred size: 1280×1280 minimum
+
+### 22.6 Deezer
+
+Deezer:
+- Uses CDN-hosted cover art
+- Embedded art may be displayed for local files
+- JPEG preferred
+- Size requirement: 500×500 minimum, 1000×1000 recommended
+
+### 22.7 Plex Media Server
+
+Plex:
+- Displays embedded cover art from all supported formats
+- Also scans for sidecar files: folder.jpg, cover.jpg, album.jpg
+- Priority: Embedded > folder.jpg > Cover.jpg > album.jpg
+- Supports multiple covers per album
+- Plexamp (audio-focused client) displays all embedded covers
+
+### 22.8 Roon
+
+Roon:
+- Full support for embedded cover art
+- Multiple covers with type selection
+- Album matching via Gracenote and MusicBrainz
+- Embedded art preserved during transcoding
+- Display size: up to 2000×2000 for Retina displays
+
+### 22.9 Logitech Media Server (LMS)
+
+Logitech Media Server (Squeezebox ecosystem):
+- Supports embedded cover art in MP3, FLAC, OGG, AAC
+- Sidecar files: folder.jpg, album.jpg, cover.jpg, front.jpg
+- Multiple covers supported (front, back, etc.)
+- Cover art cached on server for streaming
+
+### 22.10 Sonos
+
+Sonos:
+- Supports embedded cover art
+- JPEG preferred
+- PNG supported (may be transcoded)
+- Sidecar file: folder.jpg
+- Size recommendation: 500×500 minimum
+
+---
+
+## 23. COVER ART GENERATION AND SOURCES
+
+### 23.1 Acquiring Cover Art
+
+| Source | Quality | Copyright | Notes |
+|--------|---------|---------|-------|
+| Label-provided master | Highest | Licensed | Request from label |
+| MusicBrainz Cover Art Archive | High | Various | archive.org/coverart |
+| Discogs | Medium-High | Various | Check image license |
+| Wikipedia Commons | Variable | CC licenses | Check specific license |
+| Google Images | Variable | Various | Verify rights |
+| Amazon product images | Medium | Varies | Check license |
+| Manual photography | Highest | Owned | Scan physical cover |
+| Artist-provided | Variable | Licensed | Request from artist |
+
+### 23.2 Cover Art from MusicBrainz
+
+```bash
+# Using musicbrainz-utils or coverart-api
+musicbrainz-cover-art --release MBID --directory ./covers
+
+# Or using curl directly
+RELEASE_ID="12345678-1234-1234-1234-123456789012"
+curl -s "https://coverartarchive.org/release/$RELEASE_ID/front-250" -o cover.jpg
+```
+
+### 23.3 Cover Art from Discogs
+
+Discogs provides cover art via their API:
+```bash
+# Get release artwork
+curl -s "https://api.discogs.com/releases/{release_id}" \
+  -H "Authorization: Discogs token=YOUR_TOKEN" \
+  | jq '.images[0].uri'
+```
+
+### 23.4 Creating Placeholder Cover Art
+
+For tracks without cover art:
+- Generate a simple placeholder with track name and artist
+- Use a consistent template for a collection
+- Do not leave files without cover art (many players display broken icons)
+
+```python
+# Generate placeholder cover art
+from PIL import Image, ImageDraw, ImageFont
+
+def create_placeholder(title, artist, size=(1200, 1200), color=(64, 64, 64)):
+    img = Image.new('RGB', size, color)
+    draw = ImageDraw.Draw(img)
+
+    # Add text
+    try:
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
+    except:
+        font_large = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+
+    # Title (centered)
+    bbox = draw.textbbox((0, 0), title, font=font_large)
+    text_width = bbox[2] - bbox[0]
+    x = (size[0] - text_width) // 2
+    draw.text((x, size[1]//2 - 80), title, fill=(255, 255, 255), font=font_large)
+
+    # Artist
+    bbox = draw.textbbox((0, 0), artist, font=font_small)
+    text_width = bbox[2] - bbox[0]
+    x = (size[0] - text_width) // 2
+    draw.text((x, size[1]//2 + 20), artist, fill=(200, 200, 200), font=font_small)
+
+    img.save('placeholder.jpg', 'JPEG', quality=85)
+```
+
+---
+
+## 24. COVER ART STANDARDS COMPLIANCE
+
+### 24.1 ID3.org Compliance
+
+ID3v2.4 APIC frame compliance:
+- Frame ID must be "APIC" (0x41 0x50 0x49 0x43)
+- MIME type string must be null-terminated
+- Text encoding byte determines string encoding
+- Description string must be null-terminated
+- Picture data may be any length
+- Multiple APIC frames allowed with unique descriptions
+
+### 24.2 Xiph.org FLAC Compliance
+
+FLAC METADATA_BLOCK_PICTURE compliance:
+- All numeric fields are big-endian uint32
+- MIME type is ASCII printable (0x20–0x7E)
+- Width, height, depth, colors are mandatory
+- Picture type follows ID3v2 numbering
+- Multiple picture blocks allowed
+- No null terminators on any string (length is explicit)
+
+### 24.3 MP4/ISO Base Media Compliance
+
+MP4 covr atom compliance:
+- covr atom must be inside moov.udta.meta.ilst
+- Each child data atom has type 0x0D (JPEG) or 0x0E (PNG)
+- Image data is raw binary (no encoding)
+- Multiple covers stored as multiple data atoms
+
+### 24.4 Vorbis Comment Compliance
+
+METADATA_BLOCK_PICTURE compliance:
+- Field name is case-insensitive
+- Value is base64-encoded FLAC picture block
+- Multiple fields allowed (one per picture)
+- Base64 must be standard alphabet (A-Z, a-z, 0-9, +, /)
+- Padding with = characters
+
+---
+
+## 25. APPENDIX: COMPLETE BINARY REFERENCE
+
+### 25.1 APIC Frame — Byte-by-Byte Analysis
+
+Complete APIC frame from a real MP3 file:
+
+```
+Frame Header (10 bytes):
+41 50 49 43          Frame ID "APIC"
+00 1D 4E 94          Frame size = 1,923,988 bytes (big-endian uint32)
+00 00                Flags = 0x0000
+
+Frame Body (variable, 1,923,988 bytes):
+[03]                 Text encoding = UTF-8
+[69 6D 61 67 65 2F  "image/jpeg"
+ 6A 70 65 67 00]    MIME type "image/jpeg" + null terminator
+[03]                 Picture type = 0x03 (Front cover)
+[46 72 6F 6E 74 20  "Front cover"
+ 63 6F 76 65 72 00] Description "Front cover" + null terminator (UTF-8)
+[FF D8 FF E0 00 10  JPEG SOI and APP0 marker
+ 4A 46 49 46 00 01
+ 01 00 00 01 00 01
+ 00 00 ...]         JPEG image data continues...
+[... continues for 1,923,900 more bytes ...]
+[FF D9]             JPEG EOI marker
+```
+
+### 25.2 FLAC PICTURE Block — Complete Structure
+
+```
+METADATA_BLOCK_PICTURE (32 + variable bytes):
+
+Bytes 0-3:    Picture type = 0x00000003 (front cover)
+Bytes 4-7:    MIME length = 0x0000000A (10 bytes)
+Bytes 8-17:   MIME type = "image/jpeg" (10 ASCII bytes, no null)
+Bytes 18-21:  Description length = 0x0000000C (12 bytes)
+Bytes 22-33:  Description = "Front cover" (12 UTF-8 bytes)
+Bytes 34-37:  Width = 0x000004B0 (1200 pixels)
+Bytes 38-41:  Height = 0x000004B0 (1200 pixels)
+Bytes 42-45:  Color depth = 0x00000018 (24 bits per pixel)
+Bytes 46-49:  Colors used = 0x00000000 (0 = not indexed)
+Bytes 50-53:  Picture data length = 0x001D4E5C (1,923,956 bytes)
+Bytes 54+:    JPEG binary data (1,923,956 bytes)
+
+Total block size: 54 + 1,923,956 = 1,924,010 bytes
+Block header (4 bytes): 00 00 1D 4E (little-endian = 1,923,982)
+Wait — FLAC metadata blocks use big-endian for type/size...
+```
+
+### 25.3 MP4 covr Atom Structure
+
+```
+moov.udta.meta.ilst.covr.data (in file):
+
+Box Header (8 bytes):
+00 1D 4E 98          Box size = 1,924,008 bytes (big-endian uint32)
+63 6F 76 72          "covr" atom type
+
+data[0] Box (8 bytes header + image):
+00 1D 4E 90          Box size = 1,923,952 bytes
+64 61 74 61          "data" atom type
+00 00 00 00          Reserved (4 bytes)
+00 0D                 Data type = JPEG (0x0D = mdta/jpeg)
+00 00                Reserved (2 bytes)
+[FF D8 FF E0 ...]    JPEG SOI and image data
+[... JPEG continues ...]
+[FF D9]              JPEG EOI marker
+```
+
+---
+
+## 26. COVER ART IMPLEMENTATION CHECKLIST
+
+### 26.1 For Audio Converters
+
+- [ ] Extract cover art from source file (APIC, METADATA_BLOCK_PICTURE, covr)
+- [ ] Convert image format if needed (PNG → JPEG for MP3)
+- [ ] Resize image if exceeding maximum dimensions
+- [ ] Compress image if exceeding maximum file size
+- [ ] Preserve picture type (0x03 = front cover)
+- [ ] Set correct MIME type in destination format
+- [ ] Set correct text encoding (UTF-8 recommended)
+- [ ] Embed cover art with appropriate disposition
+- [ ] Verify embedded art matches source (compare checksums)
+- [ ] Test output file in multiple players
+
+### 26.2 For Tag Editors
+
+- [ ] Display all embedded pictures with their types
+- [ ] Allow adding new pictures with type selection
+- [ ] Allow removing individual pictures
+- [ ] Support reordering multiple pictures
+- [ ] Validate image format before embedding
+- [ ] Warn about oversized images
+- [ ] Support batch embedding from folder.jpg
+- [ ] Extract cover art to external file
+- [ ] Preserve all existing tags during cover art changes
+
+### 26.3 For Media Servers
+
+- [ ] Scan and index all embedded cover art
+- [ ] Support sidecar files (folder.jpg, etc.)
+- [ ] Generate thumbnails at multiple sizes
+- [ ] Cache cover art for fast retrieval
+- [ ] Handle files without cover art gracefully
+- [ ] Support multiple covers per album
+- [ ] Display cover art in player UI
+- [ ] Enable cover art download/export
+
+### 26.4 For Streaming Uploads
+
+- [ ] Resize to service's recommended dimensions
+- [ ] Compress to service's recommended file size
+- [ ] Convert to JPEG if needed
+- [ ] Verify square aspect ratio
+- [ ] Upload to CDN via API
+- [ ] Embed in source file as backup
+- [ ] Test display in target service's app
+- [ ] Handle multiple release variants
+
+---
+
 *File generated for: Audio Engineering Knowledge Base*
 *Topic: Embedded Cover Art, APIC, METADATA_BLOCK_PICTURE, covr Atom*
 *[NEEDS VERIFICATION] markers indicate specific numerical values that require additional source confirmation*
 *[NEEDS VERIFICATION]: The WMA/ASF WM/Picture binary format — the structure described is based on typical ASF_PICTURE object layouts but should be verified against the ASF specification document*
+*[NEEDS VERIFICATION]: The exact max sizes for streaming services in Section 15.1 — these change frequently and should be verified against current platform documentation*
+*[NEEDS VERIFICATION]: Specific size limits for iTunes (6000×6000) and other platform-specific maximum dimensions*

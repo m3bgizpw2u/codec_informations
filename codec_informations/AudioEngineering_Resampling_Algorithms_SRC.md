@@ -1009,7 +1009,588 @@ Output: y[m]
 
 ---
 
+## 16. INTER-SAMPLE RESAMPLING PROBLEMS
+
+### 16.1 The Inter-Sample Domain Problem
+
+Standard sample rate conversion assumes that audio samples represent point samples of the continuous waveform — instantaneous amplitude values at discrete time points. However, in a real digital-to-analog converter (DAC), the reconstruction filter reconstructs a continuous waveform between samples. The inter-sample peak levels can exceed the sample values themselves.
+
+**Inter-sample peaks** occur when the ideal reconstruction of the bandlimited signal between two samples produces a higher amplitude than either sample point. This is particularly common in heavily compressed/limited audio, where peaks are "held" longer than one sample.
+
+**Example:**
+- Sample[n] = +0.95
+- Sample[n+1] = +0.95
+- The inter-sample peak at t = n + 0.5 could be +1.0 or higher depending on the waveform shape
+
+### 16.2 Why This Matters for SRC
+
+When downsampling, inter-sample peaks above the new Nyquist frequency can cause aliasing that would not appear if the samples were truly point samples. Conversely, when upsampling, the inter-sample domain must be considered to avoid clipping.
+
+**SRC systems that ignore inter-sample behavior:**
+- Simple linear interpolation: No inter-sample peak handling
+- Basic ZOH: No inter-sample peak handling
+- Standard sinc: No inter-sample peak handling
+
+**SRC systems that account for inter-sample peaks:**
+- High-quality bandlimited sinc (libsamplerate SINC_BEST): The sinc kernel inherently reconstructs the bandlimited waveform correctly, including inter-sample peaks
+- Proper anti-alias filtered polyphase: The filter design accounts for full-bandwidth content
+
+### 16.3 Impact on Dynamic Range
+
+For audio with high crest factor (classical music, acoustic recordings):
+- Sample peak may be -3 dBFS
+- Inter-sample peak may be -1 dBFS
+- After downsampling, the inter-sample peak is captured in the new samples
+
+For heavily compressed audio (EDM, pop):
+- Sample peak = -0.5 dBFS
+- Inter-sample peak may reach 0 dBFS
+- After SRC, samples may clip if not handled
+
+### 16.4 Recommended Handling
+
+1. **For downsampling:** Apply appropriate anti-alias filtering that accounts for the full audio bandwidth
+2. **For upsampling:** The sinc reconstruction naturally handles inter-sample peaks
+3. **For delivery:** Maintain headroom of at least -0.3 dBFS to accommodate inter-sample peaks
+4. **For conversion:** Use high-quality bandlimited sinc (SRC_SINC_BEST_QUALITY or soxr) which reconstructs the waveform correctly
+
+---
+
+## 17. RESAMPLING AND GROUP DELAY
+
+### 17.1 Group Delay Fundamentals
+
+Group delay is the derivative of phase with respect to frequency:
+$$\tau_g(\omega) = -\frac{d\phi(\omega)}{d\omega}$$
+
+For a linear phase filter with impulse response $h[n]$ of length $N$:
+$$\phi(\omega) = -\omega \cdot \frac{N-1}{2} + \phi_0(\omega)$$
+$$\tau_g(\omega) = \frac{N-1}{2} - \frac{d\phi_0(\omega)}{d\omega}$$
+
+The ideal linear phase filter has constant group delay $\tau_g = (N-1)/2$ samples.
+
+### 17.2 Group Delay in Polyphase Resampling
+
+In polyphase FIR resampling, the group delay is:
+$$\tau_g = \frac{L_{filter}}{2} \cdot \frac{f_{in}}{f_{out}} \text{ samples (input domain)}$$
+
+Where $L_{filter}$ is the total filter length in input samples.
+
+**Example:** Converting 44100 → 48000 with a 64-tap filter:
+- Filter half-length in input domain: 32 samples
+- Group delay in input domain: 32 samples
+- Group delay in output domain: 32 × 44100/48000 ≈ 29.4 samples
+
+### 17.3 Audibility of Group Delay
+
+| Group Delay | Duration (at 44.1 kHz) | Audibility |
+|------------|------------------------|-----------|
+| < 1 sample | < 22.7 µs | Imperceptible |
+| 1–5 samples | 22.7–113 µs | Perceptible on transients (debate) |
+| 5–20 samples | 113–453 µs | Audible on percussive material |
+| > 20 samples | > 453 µs | Clearly audible on all transient content |
+
+The human ear is most sensitive to group delay variations in the 1–10 kHz range. A group delay of 1 ms at 4 kHz corresponds to 44 samples at 44.1 kHz.
+
+### 17.4 Pre-Ringing Duration
+
+Pre-ringing from linear phase filters is closely related to group delay. The ringing extends $L_{filter}/2$ samples before each transient:
+
+**Example calculation:**
+- Filter length: 256 taps
+- Pre-ringing: 128 samples
+- At 96 kHz: 128/96000 ≈ 1.33 ms of pre-ringing before transients
+
+**Perceptibility of pre-ringing:**
+- < 0.5 ms: Generally imperceptible
+- 0.5–2 ms: Noticeable on close inspection, on certain material
+- 2–5 ms: Clearly audible on percussive instruments
+- > 5 ms: Very audible, causes "smearing" of transients
+
+---
+
+## 18. MULTI-CHANNEL RESAMPLING
+
+### 18.1 Channel Synchronization Requirements
+
+For multi-channel audio (stereo, surround), all channels must be resampled with identical fractional delays. Even a 0.1-sample mismatch between left and right channels can cause:
+- Stereo image instability
+- Perceived spatial distortion
+- Comb filtering in stereo sum
+
+### 18.2 libsamplerate Channel Handling
+
+libsamplerate processes each channel independently but uses the same filter state for all channels, ensuring sample-accurate synchronization:
+
+```c
+// libsamplerate processes all channels in lock-step
+SRC_STATE *state = src_new(SRC_SINC_BEST_QUALITY, 6, &error);
+// Channels: FL, FR, FC, LFE, SL, SR (5.1)
+
+// All 6 channels use identical phase relationships
+// No inter-channel timing drift
+```
+
+### 18.3 Phase Relationships in Surround
+
+For 5.1 surround (FL, FR, FC, LFE, SL, SR):
+- FL, FR, FC should maintain relative phase (typically 0°)
+- LFE channel is low-passed at 80–120 Hz — can have different phase without perceptual impact
+- SL, SR (surround) should be phase-matched to FL, FR
+- Common issue: LFE channel resampled differently from main channels causes bass imaging problems
+
+### 18.4 Inter-channel Cross-talk During Resampling
+
+In ideal SRC, there should be zero cross-talk between channels. However, in imperfect implementations:
+- FIR filter overlap between channels can cause cross-talk
+- Fixed-point arithmetic with insufficient precision can cause inter-channel leakage
+- Non-linear phase in different channels causes stereo image distortion
+
+**Verification:** Generate a mono impulse in the left channel only and verify no energy appears in the right channel after SRC.
+
+---
+
+## 19. TIME-VARYING AND VARIABLE-RATE SRC
+
+### 19.1 Time-Varying SRC
+
+libsamplerate supports time-varying sample rate conversion where the ratio changes during the conversion process. This is used for:
+- Varifast/slow effects (scratch simulation)
+- Synchronizing two unlocked clocks
+- Real-time audio/video sync adjustment
+
+```c
+// Time-varying SRC with libsamplerate
+SRC_DATA data = {0};
+data.data_in = input;
+data.data_out = output;
+data.input_frames = input_frames;
+
+// Ratio changes between calls:
+data.src_ratio = current_ratio;  // Change ratio dynamically
+
+src_process(state, &data);
+```
+
+### 19.2 Synchronizing Two Unlocked Clocks
+
+When syncing audio from two sources with slightly different sample rates (e.g., two independent digital recorders):
+- Determine the ratio: $R = f_1 / f_2$
+- Apply time-varying SRC to align streams
+- The algorithm interpolates between ratios to prevent pitch stepping
+
+### 19.3 Varispeed Effects
+
+True varispeed changes both pitch and tempo by the same factor:
+$$f_{out} = f_{in} \times speed\_ratio$$
+$$\text{pitch\_shift\_semitones} = 12 \times \log_2(speed\_ratio)$$
+
+This is NOT the same as SRC, which preserves pitch and tempo.
+
+**Example:**
+- 2× playback speed = pitch up 1 octave (12 semitones)
+- 0.5× playback speed = pitch down 1 octave
+
+---
+
+## 20. SRC QUALITY TESTING METHODOLOGY
+
+### 20.1 Objective Quality Metrics
+
+**SNR (Signal-to-Noise Ratio):**
+$$SNR = 10 \log_{10}\left(\frac{P_{signal}}{P_{noise}}\right) \text{ dB}$$
+
+Where $P_{noise}$ includes both quantization noise and any residual aliasing/imaging artifacts.
+
+**THD+N (Total Harmonic Distortion + Noise):**
+Measure the residual after subtracting the original signal:
+$$THD+N = 20 \log_{10}\left(\frac{\text{RMS(residual)}}{\text{RMS(signal)}}\right) \text{ dB}$$
+
+### 20.2 Test Signals
+
+**1. Sine wave (tone) test:**
+- Frequency: 997 Hz (standard test frequency)
+- Level: -1 dBFS
+- Analysis: Check for harmonic distortion products at 1994, 2991, 3988 Hz...
+- Pass criteria: No harmonics above -100 dBFS for SRC_SINC_BEST
+
+**2. Multi-tone test:**
+- Frequencies: 997, 2003, 4001, 8003 Hz
+- Purpose: Detect intermodulation between tones
+- Pass criteria: No IM products above -100 dBFS
+
+**3. Swept sine (frequency response):**
+- Purpose: Verify flat frequency response across the passband
+- Analysis: Measure amplitude at each frequency before and after SRC
+- Pass criteria: ±0.01 dB variation across 20 Hz–20 kHz
+
+**4. Impulse test:**
+- Signal: Single-sample impulse at center of buffer
+- Analysis: Observe pre/post ringing and group delay
+- Pass criteria: Symmetric ringing, no asymmetry or instability
+
+**5. Silence test:**
+- Signal: 10 seconds of digital silence
+- Analysis: Verify output is silence (no rounding artifacts or DC offset)
+- Pass criteria: Output exactly zero, no DC offset
+
+### 20.3 Round-Trip Testing
+
+**SRC round-trip test:**
+```
+Original: 44100 Hz
+→ Convert: 44100 → 48000 → 44100 (round-trip)
+→ Compare: Should be perceptually identical to original
+
+The accumulated error from two SRC stages reveals:
+- Numerical precision issues
+- Filter imperfections
+- Phase errors
+```
+
+### 20.4 Perceptual Testing Protocol
+
+For subjective evaluation:
+1. Use ABX testing methodology
+2. Test with at least 10 participants
+3. Material: Classical, jazz, electronic (each tests different aspects)
+4. A properly implemented SRC_SINC_BEST_QUALITY or soxr converter should be transparent for 16-bit and higher audio
+
+---
+
+## 21. SPECIAL RESAMPLING SCENARIOS
+
+### 21.1 Converting Between Very High Sample Rates
+
+For sample rates above 192 kHz (DXD, DSD-related rates):
+
+| Conversion | Consideration |
+|-----------|---------------|
+| 352800 → 192000 | Simple 7:16 decimation, easy anti-alias filter design |
+| 2822400 → 192000 | DSD64 to 192k, requires very steep anti-alias |
+| 768000 → 96000 | 8:1 decimation, manageable filter design |
+| 384000 → 48000 | 8:1 decimation, very steep filter needed |
+
+### 21.2 Resampling to Non-Standard Rates
+
+Non-standard rates like 37800 Hz, 56000 Hz, or 112000 Hz:
+- FFmpeg supports any integer rate up to 1 MHz
+- libsamplerate supports any ratio
+- Quality depends on the filter design, not the specific rate
+
+### 21.3 44.1 kHz Family vs 48 kHz Family
+
+The two families of sample rates (44.1/88.2/176.4 and 48/96/192) have the following relationships:
+
+```
+44.1 family (Hz):    22050 ←→ 44100 ←→ 88200 ←→ 176400 ←→ 352800
+                      ↑         ↑         ↑          ↑
+                      │         │         │          │
+                     1/2       1×        2×         4×         8×
+
+48 family (Hz):       24000 ←→ 48000 ←→ 96000 ←→ 192000 ←→ 384000
+                      ↑         ↑         ↑          ↑
+                      │         │         │          │
+                     1/2       1×        2×         4×         8×
+```
+
+Cross-family conversions (e.g., 44100 ↔ 48000) are the most challenging.
+
+### 21.4 44.056 kHz — Video Legacy
+
+In some video systems (NTSC), 44.056 kHz is used:
+- 44100 Hz adjusted for video frame rates
+- Conversion to 48000 requires special handling
+- Some CD drives and audio interfaces output 44.056 kHz
+
+---
+
+## 22. COMPUTATIONAL COMPLEXITY ANALYSIS
+
+### 22.1 Operation Counts
+
+For a polyphase FIR resampler with $P$ phases and $N$ filter taps per phase:
+
+| Operation | Count per Output Sample |
+|-----------|------------------------|
+| Phase selection | 1 comparison |
+| Interpolation | 1 linear interpolation |
+| Multiply-accumulate | N/2 multiplications + N/2 additions |
+| Total multiplications | N/2 |
+| Total additions | N/2 + 1 |
+
+### 22.2 Complexity vs Quality Trade-off
+
+| Filter Length | SNR (approx) | Multiplications per Sample | Relative Speed |
+|-------------|---------------|--------------------------|----------------|
+| 8 taps | ~60 dB | 4 | Very fast |
+| 16 taps | ~80 dB | 8 | Fast |
+| 32 taps | ~100 dB | 16 | Moderate |
+| 64 taps | ~120 dB | 32 | Slow |
+| 128 taps | ~140 dB | 64 | Very slow |
+| 256 taps | ~160 dB | 128 | Extremely slow |
+
+### 22.3 SIMD Optimization
+
+Modern implementations use SIMD (Single Instruction Multiple Data) instructions:
+- SSE/AVX on x86
+- NEON on ARM
+- AltiVec on PowerPC
+
+SIMD allows processing 4–8 samples simultaneously, providing 4–8× speedup.
+
+### 22.4 Real-Time Feasibility
+
+For real-time audio at 48 kHz:
+- Processing 1024 samples at 48 kHz = 21.3 ms budget per buffer
+- At SRC_SINC_BEST_QUALITY with 256-tap filter: requires significant CPU
+- Most modern CPUs can handle 8–16 channels of high-quality SRC in real-time
+
+---
+
+## 23. SRC IN PRO AUDIO WORKFLOWS
+
+### 23.1 DAW Internal Resampling
+
+Professional DAWs (Pro Tools, Logic, Ableton) typically:
+- Use internal rates of 96 or 192 kHz
+- Resample to output rate only at the final stage
+- Apply high-quality SRC (often libsamplerate or proprietary)
+- May offer choice of SRC quality in preferences
+
+### 23.2 Mastering Session Workflow
+
+```
+1. Record at native rate (e.g., 96 kHz)
+         ↓
+2. Process at native rate (EQ, compression)
+         ↓
+3. Apply limiting/ceiling
+         ↓
+4. High-quality SRC to target rate (44.1 or 48 kHz)
+         ↓
+5. Apply dithering (TPDF or TPDF+NS)
+         ↓
+6. Dither to target bit depth (16 or 24 bit)
+         ↓
+7. Output to delivery format
+```
+
+### 23.3 Broadcast Compliance
+
+Broadcast standards (EBU R68, ATSC A/85) specify:
+- Sample rate: 48 kHz standard
+- Bit depth: 16-bit minimum (20-bit recommended)
+- Dithering: TPDF, applied at final output
+- Peak level: -18 dBFS = 0 dB on PPM
+
+---
+
+## 24. KNOWN ISSUES AND EDGE CASES
+
+### 24.1 Clipping During SRC
+
+SRC should never create samples beyond the input range, but numerical errors can cause overflow:
+- **Symptom:** Output contains NaN, Inf, or values > 1.0
+- **Cause:** Fixed-point overflow, floating-point accumulation errors
+- **Solution:** Clamp output values, use higher precision internally
+
+### 24.2 DC Offset Accumulation
+
+DC offset in input can cause ringing artifacts with sinc filters:
+- **Symptom:** Low-frequency oscillation in output
+- **Cause:** DC is outside the passband of high-quality filters
+- **Solution:** High-pass filter the input before SRC if DC is present
+
+### 24.3 Sub-sample Time Alignment
+
+When aligning audio from different sources:
+- Sub-sample accuracy is needed for proper phase alignment
+- Standard SRC provides fractional-sample accuracy
+- libsamplerate's SINC converters provide sub-sample accuracy through phase interpolation
+
+### 24.4 Non-Integer Channel Counts
+
+libsamplerate supports up to 64 channels, but audio with unusual channel counts (3, 5, 7) may not be supported by all implementations.
+
+---
+
+## 25. APPENDIX: QUICK REFERENCE TABLES
+
+### 25.1 libsamplerate Quality Selection
+
+| Use Case | Quality | SNR | Bandwidth | Speed |
+|----------|---------|-----|-----------|-------|
+| Archival | SRC_SINC_BEST_QUALITY | 144 dB | 96% | Slow |
+| Mastering | SRC_SINC_BEST_QUALITY | 144 dB | 96% | Slow |
+| Mixing | SRC_SINC_MEDIUM_QUALITY | 121 dB | 90% | Moderate |
+| Playback | SRC_SINC_FASTEST | 97 dB | 80% | Fast |
+| Preview | SRC_LINEAR | ~60 dB | Full | Fastest |
+
+### 25.2 FFmpeg soxr Precision Settings
+
+| Precision | Bits | Use Case | SNR |
+|-----------|------|----------|-----|
+| 20 bits (default) | 20 | General purpose | ~120 dB |
+| 28 bits | 28 | Professional/archival | ~168 dB |
+
+### 25.3 Common Sample Rate Ratios
+
+| From | To | Ratio | P | Q | Difficulty |
+|------|-----|-------|---|---|------------|
+| 44100 | 48000 | 1.08844 | 160 | 147 | Irrational |
+| 48000 | 44100 | 0.91875 | 147 | 160 | Irrational |
+| 44100 | 88200 | 2.17687 | 640 | 294 | Irrational |
+| 48000 | 96000 | 2.0 | 2 | 1 | Simple integer |
+| 96000 | 44100 | 0.45937 | 147 | 320 | Irrational |
+| 192000 | 48000 | 0.25 | 1 | 4 | Simple integer |
+
+---
+
+## 26. SRC IN REAL-WORLD CONVERSION CHAINS
+
+### 26.1 CD-DA to DVD-Audio Conversion
+
+When converting audio from CD (44100 Hz) to DVD-Audio (96000 Hz):
+
+```
+Input:  44100 Hz CD audio
+        ↓
+Step 1: Upsample by 160 → 7056000 Hz (160 × 44100)
+        ↓
+Step 2: Apply LP filter at ~48000 Hz
+        ↓
+Step 3: Downsample by 147 → 48000 Hz (7056000 / 147)
+        ↓
+Step 4: Upsample by 2 → 96000 Hz
+        ↓
+Output: 96000 Hz DVD-Audio
+```
+
+Total ratio: 96000/44100 = 320/147 = 2.17687
+
+This is equivalent to a single SRC with ratio 96000/44100, using a filter designed for 96 kHz bandwidth.
+
+### 26.2 Multi-Stage vs Single-Stage Conversion
+
+**Single-stage (preferred):**
+- Convert directly from 44100 → 96000
+- One filter design for the target rate
+- Simpler implementation
+- No accumulated error
+
+**Multi-stage:**
+- 44100 → 48000 → 96000
+- Each stage introduces small errors
+- Only useful when intermediate format is needed
+- Example: output needs to go to both 48 kHz and 96 kHz devices
+
+### 26.3 DSD Recording Chain
+
+Modern DSD recording chains:
+
+```
+DSD64 (2.8224 MHz) Sigma-Delta Modulator
+        ↓
+Decimation to DXD (352800 Hz) — 1/8 decimation
+        ↓
+Optional: DXD → PCM 176400 Hz (1/2 decimation)
+        ↓
+Optional: PCM → CD rate (44100 Hz) or professional rate (48000 Hz)
+```
+
+The sigma-delta modulator's noise shaping must be considered when choosing the decimation filter. A simple integer decimation (averaging 8 samples) is NOT equivalent to proper bandlimited reconstruction.
+
+### 26.4 Live Sound System Sample Rate Management
+
+In live sound reinforcement:
+- Input: Various sample rates (44.1, 48, 96 kHz)
+- Internal processing: Fixed rate (48 or 96 kHz)
+- Output: Rate matches DAC hardware
+
+SRC is applied at the input stage to convert all inputs to the internal rate. The conversion quality affects the entire signal chain.
+
+---
+
+## 27. RESAMPLING AND LOUDNESS
+
+### 27.1 SRC Does Not Affect Loudness
+
+SRC is a linear operation that does not change the RMS level or perceived loudness of the signal. The filter's passband gain is unity (0 dB) across the audio band.
+
+However, some imperfect implementations may introduce very small gain variations (< 0.01 dB) at the edges of the passband.
+
+### 27.2 Anti-Alias Filter and Low-Frequency Content
+
+The anti-alias filter for downsampling must preserve DC and low frequencies. The filter design should:
+- Pass DC (0 Hz) with unity gain
+- Have a very narrow transition band near the new Nyquist
+- Not introduce ripple in the passband
+
+A poorly designed filter can affect low-frequency content near the new Nyquist boundary.
+
+### 27.3 Loudness Normalization After SRC
+
+If loudness normalization (EBU R128, ReplayGain) is applied:
+1. Run SRC first
+2. Then measure loudness
+3. Apply gain correction
+
+This order ensures the loudness measurement reflects the final sample rate's characteristics.
+
+---
+
+## 28. COMMON SRC QUESTIONS
+
+### 28.1 Does SRC degrade audio quality?
+
+A properly implemented high-quality SRC (SINC_BEST or soxr) degrades audio by less than the noise floor of 16-bit audio. For 24-bit and higher, the degradation is imperceptible on any material.
+
+### 28.2 Is 96 kHz better than 48 kHz for SRC?
+
+Not necessarily. If the source is 44.1 kHz, converting to 96 kHz and back to 44.1 kHz introduces more processing than a direct 44100 → 48000 → 44100 round-trip. The target rate should be chosen based on the delivery format, not "higher is better."
+
+### 28.3 Can I hear the difference between SRC implementations?
+
+On critical program material with known high-frequency content, ABX testing can reveal differences between:
+- SRC_LINEAR vs SINC_FASTEST
+- SINC_FASTEST vs SINC_MEDIUM
+- SINC_MEDIUM vs SINC_BEST
+
+Most listeners cannot distinguish SINC_MEDIUM from SINC_BEST on normal music. The difference is primarily in the stopband rejection.
+
+### 28.4 Should I always use the highest quality SRC?
+
+For archival and mastering, yes — use SINC_BEST_QUALITY or soxr at 28-bit precision.
+
+For real-time playback with limited CPU, SINC_FASTEST or the default swr is acceptable for casual listening.
+
+### 28.5 Does SRC introduce latency?
+
+SRC introduces algorithmic delay equal to half the filter length. For a 32-tap filter at 48 kHz:
+- Delay = 16 / 48000 ≈ 0.33 ms
+
+This is imperceptible for playback but may matter for live monitoring.
+
+---
+
+## 29. SUMMARY: SRC QUALITY DECISION MATRIX
+
+| Scenario | Recommended Method | Quality Level | Reason |
+|----------|------------------|---------------|--------|
+| Archival | libsamplerate SINC_BEST | Highest | Bit-exact preservation |
+| Mastering | libsamplerate SINC_BEST or soxr | Very High | Transparent for 24-bit |
+| Mixing | libsamplerate SINC_MEDIUM | High | Good balance speed/quality |
+| Playback | FFmpeg swr (default) or SINC_FASTEST | Good | Real-time feasible |
+| Preview | FFmpeg swr | Acceptable | Quick iteration |
+| Broadcast | soxr 28-bit | Very High | Standards compliance |
+| Video sync | FFmpeg swr (default) | Good | Low latency |
+| DSD conversion | soxr 28-bit | Highest | Preserve DSD quality |
+
+---
+
 *File generated for: Audio Engineering Knowledge Base*
 *Topic: Sample Rate Conversion, Polyphase FIR, libsamplerate, FFmpeg aresample*
 *[NEEDS VERIFICATION] markers indicate specific numerical values that require additional source confirmation*
 *[NEEDS VERIFICATION]: libsamplerate SNR figures for SRC_SINC_MEDIUM_QUALITY and SRC_SINC_FASTEST converters — the GitHub source references 121 dB and 97 dB respectively, but these should be verified against the official API documentation at mega-nerd.com/SRC*
+*[NEEDS VERIFICATION]: Group delay audibility thresholds — the values in Section 17.3 are based on psychoacoustic research and should be verified against peer-reviewed sources*

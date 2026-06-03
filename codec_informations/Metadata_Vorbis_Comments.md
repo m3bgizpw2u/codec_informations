@@ -930,8 +930,626 @@ ffmpeg -i input.wav \
 
 ---
 
+## 15. ADVANCED VORBIS COMMENT OPERATIONS
+
+### 15.1 Complete Vorbis Comment Parser
+
+```python
+import struct
+
+def parse_vorbis_comment_packet(packet_bytes):
+    """Parse a raw Vorbis comment packet into a structured format."""
+    offset = 0
+
+    # Vendor string
+    vendor_len = struct.unpack('<I', packet_bytes[offset:offset+4])[0]
+    offset += 4
+    vendor_string = packet_bytes[offset:offset+vendor_len].decode('utf-8', errors='replace')
+    offset += vendor_len
+
+    # User comment list
+    comment_count = struct.unpack('<I', packet_bytes[offset:offset+4])[0]
+    offset += 4
+
+    comments = []
+    for _ in range(comment_count):
+        comment_len = struct.unpack('<I', packet_bytes[offset:offset+4])[0]
+        offset += 4
+        comment_data = packet_bytes[offset:offset+comment_len].decode('utf-8', errors='replace')
+        offset += comment_len
+
+        # Split into key=value
+        if '=' in comment_data:
+            eq_pos = comment_data.index('=')
+            key = comment_data[:eq_pos]
+            value = comment_data[eq_pos+1:]
+            comments.append({'key': key, 'value': value})
+        else:
+            comments.append({'key': '', 'value': comment_data})
+
+    # Framing bit (1 bit after all comments, padded to byte boundary)
+    # In practice, this is the next byte if present
+
+    return {
+        'vendor_string': vendor_string,
+        'comments': comments
+    }
+
+def build_vorbis_comment_packet(vendor_string, comments):
+    """Build a raw Vorbis comment packet from structured data."""
+    packet = bytearray()
+
+    # Vendor string
+    vendor_bytes = vendor_string.encode('utf-8')
+    packet += struct.pack('<I', len(vendor_bytes))
+    packet += vendor_bytes
+
+    # User comments
+    packet += struct.pack('<I', len(comments))
+    for comment in comments:
+        key_value = f"{comment['key']}={comment['value']}"
+        key_value_bytes = key_value.encode('utf-8')
+        packet += struct.pack('<I', len(key_value_bytes))
+        packet += key_value_bytes
+
+    # Framing bit (as a byte 0x01)
+    packet += b'\x01'
+
+    return bytes(packet)
+```
+
+### 15.2 Batch Tag Editing
+
+```bash
+#!/bin/bash
+# Batch add ReplayGain tags to all FLAC files in a directory
+
+ALBUM_GAIN=""
+ALBUM_PEAK=""
+
+for f in *.flac; do
+    # Run ReplayGain scan
+    RESULT=$(aegisub-replaygain --track "$f" 2>/dev/null)
+    GAIN=$(echo "$RESULT" | grep "Track gain" | awk '{print $3}')
+    PEAK=$(echo "$RESULT" | grep "Track peak" | awk '{print $3}')
+
+    if [ -n "$GAIN" ]; then
+        # Add tags with FFmpeg
+        ffmpeg -y -i "$f" \
+          -metadata REPLAYGAIN_TRACK_GAIN="$GAIN dB" \
+          -metadata REPLAYGAIN_TRACK_PEAK="$PEAK" \
+          -c copy \
+          "${f%.flac}_tagged.flac"
+
+        # Replace original
+        mv "${f%.flac}_tagged.flac" "$f"
+    fi
+done
+
+# Album gain (after all tracks are scanned)
+echo "Album gain: $ALBUM_GAIN"
+echo "Album peak: $ALBUM_PEAK"
+```
+
+```python
+# Python batch tagging with mutagen
+from pathlib import Path
+from mutagen.flac import FLAC
+from mutagen.oggvorbis import OggVorbis
+import shutil
+
+def batch_tag_folder(folder, metadata):
+    """Batch apply metadata to all audio files in a folder."""
+    folder = Path(folder)
+
+    for f in folder.glob('*.flac'):
+        audio = FLAC(str(f))
+        for key, value in metadata.items():
+            audio[key] = value
+        audio.save()
+
+    for f in folder.glob('*.ogg'):
+        audio = OggVorbis(str(f))
+        for key, value in metadata.items():
+            audio[key] = value
+        audio.save()
+```
+
+### 15.3 Tag Migration Between Formats
+
+```python
+# Migrate tags from FLAC to Opus while preserving everything
+from mutagen.flac import FLAC
+from mutagen.oggopus import OggOpus
+from mutagen.mp4 import MP4
+import subprocess
+
+def migrate_tags(source_file, target_file):
+    """Copy all applicable tags from source to target format."""
+
+    # Read source tags
+    if source_file.endswith('.flac'):
+        source = FLAC(source_file)
+    elif source_file.endswith('.mp3'):
+        source = MP3(source_file)
+    elif source_file.endswith('.m4a'):
+        source = MP4(source_file)
+    else:
+        raise ValueError(f"Unsupported source format: {source_file}")
+
+    # Get all tags
+    tags = dict(source.tags)
+
+    # Write to target
+    if target_file.endswith('.flac'):
+        target = FLAC(target_file)
+    elif target_file.endswith('.ogg'):
+        target = OggVorbis(target_file)
+    else:
+        raise ValueError(f"Unsupported target format: {target_file}")
+
+    # Write each tag
+    for key, value in tags.items():
+        # Map key names if needed
+        mapped_key = map_tag_key(key)
+        if mapped_key:
+            target[mapped_key] = value
+
+    target.save()
+```
+
+---
+
+## 16. REPLAYGAIN — COMPREHENSIVE GUIDE
+
+### 16.1 ReplayGain 1.0 vs 2.0
+
+**ReplayGain 1.0 (Original):**
+- Scan analyzes RMS levels using a simple filter
+- Track gain applied to normalize to -18 dB relative to 83 dB SPL playback
+- Album gain applied to normalize to album's average level
+- Peak protection via peak amplitude values
+
+**ReplayGain 2.0 (Revised):**
+- Compatible with EBU R128 loudness standard
+- Uses ITU-R BS.1770-4 measurement algorithm
+- Filters: K-weighting + pre-filter + RLB weighting
+- Track gain normalizes to -18 LUFS
+- Album gain normalizes to -18 LUFS for album
+- Peak values are still included for protection
+
+### 16.2 ReplayGain Measurement Process
+
+```
+1. Input: PCM samples at 44.1/48 kHz (or any rate)
+         ↓
+2. Apply replay gain filter (pre-filter + K-weighting)
+   - Pre-filter: High-shelf boost above ~1500 Hz
+   - K-weighting: High-pass filter
+         ↓
+3. RMS measurement over the entire track
+         ↓
+4. Calculate gain: G = -18 - measured_LUFS dB
+         ↓
+5. Peak measurement: Find maximum absolute sample value
+         ↓
+6. Output: REPLAYGAIN_TRACK_GAIN and REPLAYGAIN_TRACK_PEAK
+```
+
+### 16.3 ReplayGain Filter Coefficients
+
+The ReplayGain pre-filter and K-weighting filters have specific coefficients:
+
+**Pre-filter (high-shelf boost above ~1500 Hz):**
+```python
+# Pre-filter coefficients (approximate):
+# High-shelf: +4 dB boost at 3 kHz
+# Corner frequency: ~1500 Hz
+# Q: ~0.707
+```
+
+**K-weighting filter:**
+```python
+# K-weighting (from ITU-R BS.1770-4):
+# High-pass at ~38 Hz
+# High-shelf from 1500 Hz to infinity
+# Band-pass from 1500 Hz to ~7800 Hz
+```
+
+### 16.4 ReplayGain and Streaming Services
+
+Most streaming services now use EBU R128 (loudness normalization) instead of ReplayGain:
+| Service | Standard | Target Level |
+|---------|----------|-------------|
+| Spotify | Loudness normalization | -14 LUFS |
+| Apple Music | Sound Check (proprietary) | ~-16 LUFS |
+| YouTube | R128 | -14 LUFS |
+| Amazon Music | R128 | -14 LUFS |
+| Tidal | R128 | -14 LUFS |
+| Deezer | R128 | -14 LUFS |
+
+### 16.5 ReplayGain Tools Comparison
+
+| Tool | RG 1.0 | RG 2.0 | R128 | Notes |
+|------|---------|---------|------|-------|
+| loudgain | Yes | Yes | Yes | Modern, recommended |
+| aegisub-replaygain | Yes | No | No | Deprecated |
+| ffmpeg (loudnorm) | No | No | Yes | Built into FFmpeg |
+| rgain | Yes | No | No | Python-based |
+| vorbisgain | Yes | No | No | Ogg-specific |
+
+---
+
+## 17. VORBIS COMMENT VALIDATION
+
+### 17.1 Validation Checklist
+
+When processing Vorbis comments, validate:
+
+```python
+def validate_vorbis_comment(key, value):
+    """Validate a Vorbis comment key=value pair."""
+
+    # Key validation
+    if not key:
+        return False, "Empty key"
+
+    # Key characters: 0x20 to 0x7D, excluding 0x3D (=) and 0x7E (~)
+    for char in key:
+        code = ord(char)
+        if code < 0x20 or code > 0x7D:
+            return False, f"Invalid character in key: 0x{code:02X}"
+        if code == 0x3D:  # =
+            return False, "Key contains '=' character"
+        if code == 0x7E:  # ~
+            return False, "Key contains '~' character"
+
+    # Value validation: UTF-8 encoding
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False, "Value is not valid UTF-8"
+
+    # Check for null bytes
+    if '\x00' in value:
+        return False, "Value contains null byte"
+
+    return True, "Valid"
+```
+
+### 17.2 Common Validation Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| Key contains `=` | Invalid key character | Split at first `=` |
+| Empty value after `=` | Valid, but may be unexpected | Accept or reject per spec |
+| Non-UTF-8 in value | Corrupted data | Attempt replacement char decode |
+| Null byte in string | Corrupted data | Truncate at null |
+| Key < 0x20 | Invalid character | Remove or reject |
+| Framing bit missing | Truncated packet | Reject file |
+
+### 17.3 Tag Normalization
+
+When reading Vorbis comments, normalize:
+- Keys to uppercase (for comparison)
+- Whitespace in values (trim leading/trailing)
+- Track numbers to consistent format
+- Dates to YYYY-MM-DD format
+
+```python
+def normalize_vorbis_comment(key, value):
+    """Normalize a Vorbis comment for comparison."""
+
+    # Normalize key (uppercase for comparison, preserve for display)
+    normalized_key = key.upper()
+
+    # Normalize specific field values
+    if normalized_key == 'TRACKNUMBER':
+        # Extract just the track number
+        value = re.sub(r'^(\d+).*$', r'\1', value.strip())
+
+    elif normalized_key == 'DATE':
+        # Extract year
+        value = re.sub(r'^(\d{4}).*$', r'\1', value.strip())
+
+    elif normalized_key == 'REPLAYGAIN_TRACK_GAIN':
+        # Ensure format: "-6.20 dB" or "+2.50 dB"
+        value = value.strip()
+
+    elif normalized_key == 'REPLAYGAIN_TRACK_PEAK':
+        # Ensure format: "0.998459"
+        value = f"{float(value):.6f}"
+
+    return normalized_key, value
+```
+
+---
+
+## 18. VORBIS COMMENT IN SPECIFIC CONTEXTS
+
+### 18.1 Opus Cell-Based Broadcasting
+
+In CELT/Opus cell-based broadcasting systems:
+- Metadata is transmitted in a separate channel
+- Vorbis comments are used for metadata
+- Low-latency requirements limit metadata update frequency
+
+### 18.2 Podcast Metadata in Ogg Opus
+
+Podcast feeds use specific Vorbis comment fields:
+```
+TITLE=Episode title
+ARTIST=Podcast name
+ALBUM=Series name
+DATE=2024-01-15
+DESCRIPTION=Episode description
+LICENSE=CC BY 4.0
+```
+Podcast RSS feeds typically include metadata in the RSS itself, not just the audio file.
+
+### 18.3 Game Audio Vorbis Comments
+
+Game engines embed specific metadata:
+```
+TITLE=Level1_BGM
+CATEGORY=Music
+SUBCATEGORY=Battle
+LOOP=YES
+CROSSFADE=2.0
+```
+These are non-standard but widely used in game development.
+
+### 18.4 Field Recording Metadata
+
+Field recordists use:
+```
+LOCATION=Central Park, New York
+DATE=2024-06-15T14:30:00
+RECORDER=Sony PCM-D100
+MICROPHONE=Sennheiser MKH416
+WEATHER=Sunny, 25°C
+NOTES=Street performers near the fountain
+```
+
+### 18.5 Broadcast Wave Format (BWF) Tags
+
+BWF (Broadcast Wave Format) uses RIFF chunks, but Ogg-encapsulated BWF may use Vorbis comments:
+```
+ORIGINAL_DATE=2024-06-15
+BROADCAST_DATE=2024-06-15T18:00:00
+TAPE_ID=TAPE001
+```
+BWF has its own standards (EBU R98) for timecode and production metadata.
+
+---
+
+## 19. VORBIS COMMENT API REFERENCE
+
+### 19.1 libvorbis Comment API
+
+```c
+#include <vorbis/codec.h>
+
+// Get the vendor string from a vorbis_info
+const char *vorbis_comment_query(vorbis_comment *vc, const char *tag, int count);
+char **vorbis_comment_query_list(vorbis_comment *vc, const char *tag, int *count);
+void vorbis_comment_add(vorbis_comment *vc, const char *comment);
+void vorbis_comment_add_tag(vorbis_comment *vc, const char *tag, const char *contents);
+void vorbis_comment_clear(vorbis_comment *vc);
+vorbis_comment *vorbis_comment_new(void);
+```
+
+### 19.2 libopus Comment API
+
+```c
+#include <opus.h>
+#include <opuscomment.h>
+
+// opuscomment API (from libopusenc)
+opuscomment *oc_new(void);
+void oc_add_comment(opuscomment *oc, const char *tag, const char *val);
+char **oc_get_comments(opuscomment *oc, int *count);
+const char *oc_get_vendor(opuscomment *oc);
+void oc_set_vendor(opuscomment *oc, const char *vendor);
+void oc_clear(opuscomment *oc);
+```
+
+### 19.3 Mutagen (Python) API
+
+```python
+from mutagen.flac import FLAC
+from mutagen.oggvorbis import OggVorbis
+from mutagen.oggopus import OggOpus
+
+# FLAC
+audio = FLAC('file.flac')
+audio['TITLE'] = 'Song Title'
+audio['ARTIST'] = 'Artist'
+audio.save()
+
+# Vorbis (OGG)
+audio = OggVorbis('file.ogg')
+audio['TITLE'] = 'Song Title'
+audio.save()
+
+# Opus
+audio = OggOpus('file.opus')
+audio['TITLE'] = 'Song Title'
+audio.save()
+
+# Reading tags
+title = audio.get('TITLE', [''])[0]
+artists = audio.get('ARTIST', [])  # All artists
+```
+
+---
+
+## 20. VORBIS COMMENT SECURITY CONSIDERATIONS
+
+### 20.1 Buffer Overflow Prevention
+
+When parsing Vorbis comments:
+- Validate all length fields before allocating
+- Set maximum comment length (e.g., 8192 bytes per comment)
+- Set maximum total comments (e.g., 65536)
+- Use bounds-checked string operations
+
+```c
+#define MAX_COMMENT_LENGTH 8192
+#define MAX_COMMENTS 65536
+#define MAX_VENDOR_LENGTH 8192
+
+if (comment_length > MAX_COMMENT_LENGTH) {
+    return ERROR_COMMENT_TOO_LONG;
+}
+```
+
+### 20.2 UTF-8 Security
+
+Malformed UTF-8 in Vorbis comments can cause issues:
+- Overlong encodings
+- Invalid byte sequences
+- Null bytes in strings
+
+Proper handling:
+```c
+// Check for valid UTF-8 before storing
+if (!is_valid_utf8(comment_data, comment_length)) {
+    // Option 1: Reject
+    return ERROR_INVALID_UTF8;
+
+    // Option 2: Replace invalid bytes
+    char *sanitized = replace_invalid_utf8(comment_data, comment_length);
+}
+```
+
+### 20.3 Path Traversal in Values
+
+Some tag values (e.g., URLs) could contain malicious content:
+- Sanitize URLs in LICENSE and CONTACT fields
+- Strip control characters
+- Limit field lengths
+
+---
+
+## 21. VORBIS COMMENT FIELD COMPATIBILITY
+
+### 21.1 iTunes/Apple Music Tag Support
+
+| Field | Apple Music Support | Notes |
+|-------|-------------------|-------|
+| TITLE | ✓ | |
+| ARTIST | ✓ | |
+| ALBUM | ✓ | |
+| ALBUMARTIST | ✓ | |
+| TRACKNUMBER | ✓ | |
+| DISCNUMBER | ✓ | |
+| DATE | ✓ | |
+| GENRE | ✓ | iTunes genre mapping |
+| COMMENT | ✓ | |
+| COMPOSER | ✓ | |
+| COVER ART | ✓ | MP4/M4A covr atom |
+| REPLAYGAIN | ✗ | Not supported |
+| MUSICBRAINZ_* | ✗ | Ignored |
+
+### 21.2 Android Tag Support
+
+| Field | Android Support | Notes |
+|-------|----------------|-------|
+| TITLE | ✓ | |
+| ARTIST | ✓ | |
+| ALBUM | ✓ | |
+| COVER ART | ✓ | |
+| Most standard fields | ✓ | |
+| REPLAYGAIN | ✗ | Not supported |
+| MUSICBRAINZ_* | ✗ | Ignored |
+
+### 21.3 Windows Media Player Support
+
+| Field | WMP Support | Notes |
+|-------|-------------|-------|
+| TITLE | ✓ | |
+| ARTIST | ✓ | |
+| ALBUM | ✓ | |
+| COVER ART | ✓ | |
+| Extended fields | Partial | Some custom fields ignored |
+| REPLAYGAIN | ✗ | Not supported |
+
+### 21.4 Linux/Unix Tag Support
+
+| Field | Support | Notes |
+|-------|---------|-------|
+| All standard fields | ✓ | |
+| REPLAYGAIN | ✓ | Via specialized tools |
+| MUSICBRAINZ_* | ✓ | Via Picard |
+| METADATA_BLOCK_PICTURE | ✓ | Via vorbiscomment |
+
+---
+
+## 22. APPENDIX: COMPLETE FIELD REFERENCE
+
+### 22.1 Standard + Extended Field List
+
+| # | Field Name | Category | Multi-value | Example |
+|---|-----------|---------|-------------|---------|
+| 1 | TITLE | Basic | No | `TITLE=Hello World` |
+| 2 | VERSION | Basic | No | `VERSION=Album Version` |
+| 3 | ALBUM | Basic | No | `ALBUM=Greatest Hits` |
+| 4 | ALBUMARTIST | Basic | No | `ALBUMARTIST=The Beatles` |
+| 5 | ARTIST | Basic | Yes | `ARTIST=John; ARTIST=Paul` |
+| 6 | PERFORMER | Attribution | Yes | `PERFORMER=Vocals` |
+| 7 | COMPOSER | Attribution | Yes | `COMPOSER=Bach` |
+| 8 | ARRANGER | Attribution | Yes | `ARRANGER=Orchestrator` |
+| 9 | LYRICIST | Attribution | Yes | `LYRICIST=Poet` |
+| 10 | CONDUCTOR | Attribution | No | `CONDUCTOR=Karajan` |
+| 11 | ENSEMBLE | Attribution | No | `ENSEMBLE=Vienna Philharmonic` |
+| 12 | TRACKNUMBER | Identification | No | `TRACKNUMBER=5` |
+| 13 | TRACKTOTAL | Identification | No | `TRACKTOTAL=12` |
+| 14 | DISCNUMBER | Identification | No | `DISCNUMBER=1` |
+| 15 | DISCTOTAL | Identification | No | `DISCTOTAL=3` |
+| 16 | DATE | Identification | No | `DATE=2024-06-15` |
+| 17 | ORIGINALDATE | Identification | No | `ORIGINALDATE=1969` |
+| 18 | GENRE | Classification | Yes | `GENRE=Rock` |
+| 19 | MOOD | Classification | Yes | `MOOD=Energetic` |
+| 20 | STYLE | Classification | Yes | `STYLE=Progressive Rock` |
+| 21 | DESCRIPTION | Text | No | `DESCRIPTION=Live recording` |
+| 22 | COMMENT | Text | Yes | `COMMENT=Recorded in London` |
+| 23 | COMMENT | Text | Yes | `COMMENT[lang=eng]=English` |
+| 24 | LOCATION | Text | No | `LOCATION=Abbey Road Studios` |
+| 25 | CONTACT | Text | No | `CONTACT=info@example.com` |
+| 26 | LICENSE | Legal | Yes | `LICENSE=CC BY 4.0` |
+| 27 | COPYRIGHT | Legal | Yes | `COPYRIGHT=(c)2024` |
+| 28 | ISRC | Identification | Yes | `ISRC=USRCG0001234` |
+| 29 | BPM | Identification | No | `BPM=120` |
+| 30 | ENCODER | Technical | No | `ENCODER=LAME 3.100` |
+| 31 | ENCODEDBY | Technical | No | `ENCODEDBY=John Doe` |
+| 32 | ORGANIZATION | Attribution | No | `ORGANIZATION=EMI` |
+| 33 | LABEL | Attribution | No | `LABEL=EMI Records` |
+| 34 | CATALOGNUMBER | Attribution | No | `CATALOGNUMBER=EMI-12345` |
+| 35 | BARCODE | Attribution | No | `BARCODE=012345678901` |
+| 36 | UPC | Attribution | No | `UPC=012345678905` |
+| 37 | SOURCEMEDIA | Classification | No | `SOURCEMEDIA=CD` |
+| 38 | MEDIA | Classification | No | `MEDIA=Vinyl` |
+| 39 | REPLAYGAIN_TRACK_GAIN | ReplayGain | No | `REPLAYGAIN_TRACK_GAIN=-6.20 dB` |
+| 40 | REPLAYGAIN_TRACK_PEAK | ReplayGain | No | `REPLAYGAIN_TRACK_PEAK=0.998459` |
+| 41 | REPLAYGAIN_ALBUM_GAIN | ReplayGain | No | `REPLAYGAIN_ALBUM_GAIN=-5.80 dB` |
+| 42 | REPLAYGAIN_ALBUM_PEAK | ReplayGain | No | `REPLAYGAIN_ALBUM_PEAK=0.998459` |
+| 43 | ARTISTSORT | Sorting | No | `ARTISTSORT=Beatles, The` |
+| 44 | ALBUMARTISTSORT | Sorting | No | `ALBUMARTISTSORT=Beatles, The` |
+| 45 | TITLESORT | Sorting | No | `TITLESORT=Hello World` |
+| 46 | COMPOSERSORT | Sorting | No | `COMPOSERSORT=Bach, Johann Sebastian` |
+| 47 | MUSICbrainz_TRACKID | MusicBrainz | No | `MUSICBRAINZ_TRACKID=...` |
+| 48 | MUSICBRAINZ_ALBUMID | MusicBrainz | No | `MUSICBRAINZ_ALBUMID=...` |
+| 49 | MUSICBRAINZ_ARTISTID | MusicBrainz | Yes | `MUSICBRAINZ_ARTISTID=...` |
+| 50 | MUSICBRAINZ_RELEASEGROUPID | MusicBrainz | No | `MUSICBRAINZ_RELEASEGROUPID=...` |
+| 51 | METADATA_BLOCK_PICTURE | Cover Art | Yes | `METADATA_BLOCK_PICTURE=<base64>` |
+
+---
+
 *File generated for: Audio Engineering Knowledge Base*
 *Topic: Vorbis Comment, Xiph.org Metadata, FLAC Tags, OGG Metadata*
 *[NEEDS VERIFICATION] markers indicate specific numerical values that require additional source confirmation*
 *[NEEDS VERIFICATION]: The exact minimum/maximum character length limits for Vorbis comment fields — the specification does not impose explicit limits, but the 32-bit length fields allow for very large strings. Some implementations may have practical limits.*
 *[NEEDS VERIFICATION]: The full list of extended field names accepted by major players (Spotify, Apple Music, YouTube Music) for Vorbis/FLAC/Opus metadata — this information is proprietary and not publicly documented.*
+*[NEEDS VERIFICATION]: ReplayGain 1.0 filter coefficients — the exact filter design should be verified against the original ReplayGain specification document*
+*[NEEDS VERIFICATION]: The ITU-R BS.1770-4 K-weighting filter coefficients for ReplayGain 2.0 measurement*

@@ -957,14 +957,552 @@ ffmpeg -i original.wav -i candidate1.mp3 -i candidate2.mp3 \
 - [ ] Test with critical samples (transients, complex passages)
 - [ ] Compare with transparent reference bitrates
 
+## 13. ADVANCED RATE CONTROL STRATEGIES
+
+### 13.1 Per-Frame Bit Allocation
+
+Audio codecs allocate bits to individual frames based on perceptual importance.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              FRAME-LEVEL BIT ALLOCATION                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  FRAME N: Transient (percussive)                                │
+│  Bit allocation: High — peak bitrate exceeded                    │
+│                                                                   │
+│  FRAME N+1: Stationary (sustained tone)                        │
+│  Bit allocation: Moderate — below average bitrate                │
+│                                                                   │
+│  FRAME N+2: Silence/quasi-silence                                │
+│  Bit allocation: Very low — well below average                    │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 13.2 VBR Bitrate Variability
+
+| Content Type | Bitrate Variability | Peak-to-Average Ratio |
+|-------------|-------------------|----------------------|
+| Classical music | High | ~2.5x average |
+| Jazz | High | ~2.2x average |
+| Rock/Pop | Moderate | ~1.8x average |
+| Electronic | High (bass) | ~2.0x average |
+| Speech | Low | ~1.3x average |
+| Audiobook | Very low | ~1.1x average |
+
+### 13.3 Constrained VBR (CVBR)
+
+CVBR constrains bitrate to a maximum while allowing quality to vary within that constraint. Useful for streaming with bandwidth limits.
+
+```bash
+# Opus CVBR: targets 128k but allows some fluctuation
+ffmpeg -i input.wav -c:a libopus -vbr cvbr -b:a 128k output.opus
+
+# AAC: constrained bitrate with quality floor
+ffmpeg -i input.wav -c:a libfdk_aac -b:a 192k output.m4a
+```
+
+### 13.4 Bit Reservoir (MP3)
+
+MP3 uses a bit reservoir to smooth bit allocation. Complex frames borrow bits from future simple frames:
+
+```
+Frame 1: Complex → uses 200k of 192k budget
+Frame 2: Simple → uses 150k of 192k budget, saves 42k
+Frame 3: Complex → borrows 50k from Frame 2 savings
+Over time, average bitrate stays ~192k.
+LAME's reservoir can accumulate up to 768 bytes of borrowed bits.
+```
+
+### 13.5 ABR Bit Allocation Strategy
+
+ABR uses rate-distortion optimization to allocate bits per frame:
+
+```c
+for each frame:
+    complexity = measure_spectral_complexity(frame);
+    target_bits = average_bitrate / frame_rate;
+    if (complexity > threshold):
+        allocated_bits = target_bits * complexity_factor;
+    else:
+        allocated_bits = target_bits * simplicity_factor;
+    allocated_bits = clamp(allocated_bits, min, max);
+    encode_frame(frame, allocated_bits);
+```
+
+---
+
+## 14. QUALITY METRICS AND MEASUREMENT
+
+### 14.1 Objective Quality Metrics
+
+| Metric | Description | Range | Notes |
+|--------|-------------|-------|-------|
+| SNR | Signal-to-noise ratio | 0- infinity dB | Not perceptually accurate |
+| Segmental SNR | SNR per segment | 0- infinity dB | Better for variable signals |
+| PESQ | Perceptual Evaluation of Speech Quality | -0.5 to 4.5 | Speech-specific |
+| POLQA | Perceptual Objective Listening Quality Assessment | 1 to 5 | Next-gen speech quality |
+| PEAQ | Perceptual Evaluation of Audio Quality | -4 to 0 | Audio-specific |
+| ODG | Objective Difference Grade | -4 to 0 | Based on PEAQ |
+
+### 14.2 Psychoacoustic Quality Metrics
+
+```bash
+# EBU R128 loudness measurement
+ffmpeg -i input.wav -af loudnorm=print_format=json -f null -
+
+# Measure loudness stats
+ffmpeg -i input.wav -af ebur128=metadata=1 -f null - 2>&1 | grep "I:"
+
+# Basic SNR comparison
+ffmpeg -i original.wav -i encoded.wav -filter_complex "[0:a][1:a]ssim" -f null -
+```
+
+### 14.3 ABX Testing for Rigorous Comparison
+
+1. **A:** Original/reference file
+2. **B:** Encoded file being tested
+3. **X:** Randomly selected A or B
+4. **Listener:** Identifies which is X
+
+```bash
+# Prepare test files (must match duration and sample rate)
+ffmpeg -i original.wav -ar 44100 -ac 2 ref.wav
+ffmpeg -i encoded.opus -ar 44100 -ac 2 encoded.wav
+
+# Statistical significance: need 8/10 correct for p<0.05
+# Use dedicated ABX tools: foobar2000, abx.sh, or web-based ABX
+```
+
+### 14.4 Bitrate vs Perceived Quality Curve
+
+```
+Quality (ODG)
+  5 |                                           * Transparency
+    |                                       *
+  4 |                                  *
+    |                             *
+  3 |                        *  (diminishing returns)
+    |                   *
+  2 |              *
+    |         *
+  1 |     *
+    | *
+  0 +------------------------------------------------------- Bitrate
+      32k   64k   96k   128k   192k   256k   320k
+```
+
+### 14.5 Spectral Analysis
+
+```bash
+# Generate spectrogram comparison
+ffmpeg -i original.wav -lavfi "showspectrumpic=s=1920x1080" original_spec.png
+ffmpeg -i encoded.opus -lavfi "showspectrumpic=s=1920x1080" encoded_spec.png
+
+# FFT-based frequency display
+ffplay -f lavfi "amovie=input.wav,showfreqs=mode=line:fscale=log"
+```
+
+---
+
+## 15. STREAMING-SPECIFIC CONSIDERATIONS
+
+### 15.1 Protocols and Bitrate Requirements
+
+| Protocol | Typical Audio Bitrate | Notes |
+|----------|----------------------|-------|
+| HLS | 64-192 kbps | Adaptive bitrate |
+| DASH | 64-256 kbps | Adaptive bitrate |
+| RTMP | 64-192 kbps | Fixed bandwidth |
+| Icecast/Shoutcast | 64-256 kbps | MP3/Ogg Vorbis |
+| LL-HLS | 32-192 kbps | Low-latency variant |
+| WebRTC | <500ms latency | Real-time |
+
+### 15.2 ABR Streaming with FFmpeg
+
+```bash
+# Generate multiple quality levels
+for BITRATE in 64k 128k 192k 256k; do
+  ffmpeg -i input.wav \
+    -c:a libopus -vbr on -b:a "$BITRATE" \
+    "stream_${BITRATE}.m3u8"
+done
+```
+
+### 15.3 Buffering and VBR
+
+VBR requires larger buffers than CBR because peak bitrate can exceed average:
+
+```
+Example:
+  Average: 128 kbps, Peak: 256 kbps (2x)
+  Buffer for 10s: 256 kbps x 10s = 320 KB
+vs. CBR 128 kbps x 10s = 160 KB
+VBR requires ~2x the buffer of CBR.
+```
+
+### 15.4 Low-Latency Streaming
+
+| Mode | Latency | Bitrate Strategy |
+|------|---------|------------------|
+| HLS | 6-30s | CBR preferred |
+| DASH | 2-10s | VBR acceptable |
+| LL-HLS | 0.5-2s | Low-bitrate VBR |
+| WebRTC | <500ms | CBR/VBR low-bitrate |
+
+```bash
+# Low-latency Opus streaming
+ffmpeg -i input.wav -c:a libopus \
+  -vbr on -b:a 48k \
+  -frame_duration 20 \
+  -application lowdelay \
+  -f rtp "rtp://localhost:5004"
+```
+
+---
+
+## 16. PER-GENRE BITRATE REQUIREMENTS
+
+### 16.1 Genre Analysis
+
+| Genre | Characteristics | Minimum | Recommended |
+|-------|----------------|---------|-------------|
+| Piano solo | Sparse, dynamic range | 192 kbps | 256 kbps |
+| Orchestral classical | Dense harmonics | 256 kbps | 320 kbps |
+| Jazz combo | Transient-rich | 192 kbps | 256 kbps |
+| Rock/Pop | Dense mix | 192 kbps | 256 kbps |
+| Electronic/EDM | Synthetic, bass | 160 kbps | 192 kbps |
+| Hip-hop | Bass-heavy vocals | 160 kbps | 192 kbps |
+| Metal | Dense distorted guitars | 192 kbps | 256 kbps |
+| Vocal/Acoustic | Sparse, voice | 128 kbps | 192 kbps |
+| Audiobook/Speech | Monotone | 32-64 kbps | 96 kbps |
+
+### 16.2 Critical Test Samples
+
+| Sample | Why Difficult | Encoder Weakness |
+|--------|--------------|-----------------|
+| Castanets | High transients | Pre-echo in MP3 |
+| Harpsichord | Complex harmonics | Spectral smearing |
+| Glass harmonica | High-frequency sibilance | All encoders show artifacts |
+| Pitch pipe | Pure sine wave | Quantization noise |
+| Drum solo | Rapid transients | Bandwidth allocation |
+
+---
+
+## 17. C API: ADVANCED RATE CONTROL
+
+### 17.1 Custom Rate Control Setup
+
+```c
+#include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
+
+AVCodecContext *ctx = avcodec_alloc_context3(codec);
+
+// Configure bitrate
+ctx->bit_rate = 192000;
+ctx->rc_min_rate = 64000;
+ctx->rc_max_rate = 384000;
+ctx->rc_buffer_size = 0;
+
+// VBR mode
+ctx->global_quality = 0;
+av_opt_set_int(ctx, "vbr", 4, AV_OPT_SEARCH_CHILDREN);
+```
+
+### 17.2 Frame-Level Quality Override
+
+```c
+AVFrame *frame = av_frame_alloc();
+frame->format = ctx->sample_fmt;
+frame->nb_samples = ctx->frame_size;
+av_frame_get_buffer(frame, 0);
+
+// Override quality for this frame
+frame->quality = ctx->global_quality;
+
+avcodec_send_frame(ctx, frame);
+```
+
+---
+
+## 18. BITRATE MATH REFERENCE
+
+### 18.1 Core Calculations
+
+```bash
+# File size = (bitrate x duration) / 8
+# 3-min song at 192kbps: (192000 x 180) / 8 = 4.3 MB
+
+# Raw PCM bitrate = sample_rate x channels x (bit_depth / 8)
+# Stereo 44.1kHz 16-bit: 44100 x 2 x 2 = 1,411,200 bps
+# 7.1 48kHz 32-bit float: 48000 x 8 x 4 = 12,288,000 bps
+```
+
+### 18.2 Compression Ratios
+
+| Format | Ratio | Effective Bitrate |
+|--------|--------|------------------|
+| Uncompressed WAV | 1:1 | 1,411 kbps |
+| FLAC level 8 | ~2.8:1 | ~500 kbps |
+| MP3 192kbps | ~7.4:1 | 192 kbps |
+| AAC 128kbps | ~11:1 | 128 kbps |
+| Opus 64kbps | ~22:1 | 64 kbps |
+
+---
+
+## 19. EDGE CASES
+
+### 19.1 Edge Case Handling
+
+| Scenario | Issue | Solution |
+|----------|-------|----------|
+| Very short file (< delay) | Entire file is delay | Warn user |
+| Multiple concatenated tracks | Each has own delay | Decode separately, trim, concatenate |
+| Corrupt iTunSMPB | FFmpeg ignores | Fall back to default 1584/528 |
+| Variable delay encoder | Delay varies per frame | Use maximum; trim excess |
+| Non-iTunSMPB MP3 encoder | Unknown delay | Use LAME default 1584/528 |
+
+---
+
+## 20. IMPLEMENTATION CHECKLIST
+
+### Mode Selection
+- [ ] Determine use case: archival, streaming, mobile, voice
+- [ ] Choose VBR for quality, CBR for streaming compatibility
+- [ ] Select appropriate bitrate/quality level for target transparency
+
+### Encoding Pipeline
+- [ ] Validate encoder supports chosen rate control mode
+- [ ] Check encoder availability: `ffmpeg -encoders | grep libfdk`
+- [ ] Set correct quality/bitrate flag
+- [ ] Monitor actual bitrate output for VBR modes
+- [ ] Set reasonable buffer sizes for streaming
+
+### Quality Verification
+- [ ] Measure actual average bitrate: `ffprobe -show_entries format=bit_rate`
+- [ ] Verify bitrate distribution for VBR
+- [ ] Test with critical samples (transients, complex passages)
+- [ ] Compare with transparent reference bitrates
+
 ### Edge Cases
 - [ ] Handle CBR bitrate validation (must be in valid set)
 - [ ] Handle VBR quality out-of-range (clamp to valid range)
-- [ ] Handle encoder that doesn't support chosen mode (fallback)
+- [ ] Handle encoder that does not support chosen mode (fallback)
 - [ ] Handle very low bitrate scenarios (voice vs music)
+
+## 20. BITRATE MATH REFERENCE
+
+### 20.1 Core Calculations
+
+```bash
+# File size = (bitrate x duration) / 8
+# 3-min song at 192kbps: (192000 x 180) / 8 = 4.3 MB
+# Raw PCM bitrate = sample_rate x channels x (bit_depth / 8)
+# Stereo 44.1kHz 16-bit: 44100 x 2 x 2 = 1,411,200 bps
+```
+
+### 20.2 Compression Ratios
+
+| Format | Ratio | Effective Bitrate |
+|--------|-------|-----------------|
+| Uncompressed WAV | 1:1 | 1,411 kbps |
+| FLAC level 8 | ~2.8:1 | ~500 kbps |
+| MP3 192kbps | ~7.4:1 | 192 kbps |
+| AAC 128kbps | ~11:1 | 128 kbps |
+| Opus 64kbps | ~22:1 | 64 kbps |
+
+## 21. DECODER BITRATE ANALYSIS
+
+### 21.1 Measuring Actual Bitrate
+
+```bash
+# Get format-level bitrate
+ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate \
+  -of default=noprint_wrappers=1:nokey=1 input.mp3
+
+# Calculate from file size and duration
+file_size=$(stat -c%s input.mp3)
+duration=$(ffprobe -v error -show_entries format=duration \
+  -of default=noprint_wrappers=1:nokey=1 input.mp3)
+echo "Bitrate: $((file_size * 8 / duration / 1000)) kbps"
+```
+
+### 21.2 VBR Distribution Analysis
+
+```bash
+# Average bitrate
+ffprobe -v quiet -select_streams a:0 -show_entries stream=bit_rate \
+  -of csv=p=0 input.mp3 | awk '{s+=$1; n++} END {print s/n}'
+
+# Bitrate histogram
+ffprobe -v quiet -select_streams a:0 -show_entries stream=bit_rate \
+  -of csv=p=0 input.mp3 | sort -n | uniq -c
+```
+
+## 22. ADVANCED FFmpeg C API
+
+### 22.1 Complete Encode with Statistics
+
+```c
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+
+int encode_with_stats(const char *input, const char *output, int bitrate) {
+    AVFormatContext *ifmt = NULL, *ofmt = NULL;
+    avformat_open_input(&ifmt, input, NULL, NULL);
+    avformat_find_stream_info(ifmt, NULL);
+    int idx = av_find_best_stream(ifmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+
+    avformat_alloc_output_context2(&ofmt, NULL, "ogg", output);
+    AVCodecContext *enc = avcodec_alloc_context3(
+        avcodec_find_encoder_by_name("libopus"));
+    enc->bit_rate = bitrate;
+    enc->sample_rate = 48000;
+    enc->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+    enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    avcodec_open2(enc, enc->codec, NULL);
+
+    AVStream *ost = avformat_new_stream(ofmt, enc->codec);
+    avcodec_parameters_from_context(ost->codecpar, enc);
+    avio_open(&ofmt->pb, output, AVIO_FLAG_WRITE);
+    avformat_write_header(ofmt, NULL);
+
+    int64_t total_bytes = 0, frames = 0;
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+
+    while (av_read_frame(ifmt, pkt) >= 0) {
+        if (pkt->stream_index == idx) {
+            avcodec_send_packet(enc, pkt);
+            while (avcodec_receive_packet(enc, pkt) == 0) {
+                av_interleaved_write_frame(ofmt, pkt);
+                total_bytes += pkt->size;
+                frames++;
+                av_packet_unref(pkt);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    avcodec_send_frame(enc, NULL);
+    while (avcodec_receive_packet(enc, pkt) == 0) {
+        av_interleaved_write_frame(ofmt, pkt);
+        total_bytes += pkt->size;
+        av_packet_unref(pkt);
+    }
+    av_write_trailer(ofmt);
+
+    printf("Encoded %lld frames, %lld bytes\n", (long long)frames, (long long)total_bytes);
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&enc);
+    avformat_free_context(ofmt);
+    avformat_close_input(&ifmt);
+    return 0;
+}
+```
+
+### 22.2 Quality-Based Encoding Loop
+
+```c
+// Encode with quality targeting (VBR)
+int encode_vbr(const char *input, const char *output, float quality) {
+    // quality: 0.0 (best) to 1.0 (worst)
+
+    AVCodecContext *ctx = /* setup encoder */;
+
+    // LAME: 0-9, lower is better
+    int lame_quality = (int)(quality * 9.0);
+    av_opt_set_int(ctx, "q", 9 - lame_quality, AV_OPT_SEARCH_CHILDREN);
+
+    // Vorbis: -1.0 to 10.0, higher is better
+    double vorbis_quality = -1.0 + quality * 11.0;
+    av_opt_set_double(ctx, "q", vorbis_quality, AV_OPT_SEARCH_CHILDREN);
+
+    // Opus: bitrate target with VBR
+    int opus_bitrate = (int)(320000 - quality * 300000); // 20k to 320k
+    ctx->bit_rate = opus_bitrate;
+    av_opt_set_int(ctx, "vbr", 1, AV_OPT_SEARCH_CHILDREN);
+
+    // Encode loop...
+    return 0;
+}
+```
+
+## 23. APPENDIX: CODEC PROFILES AND LEVELS
+
+### 23.1 AAC Profiles
+
+| Profile | Full Name | Bitrate Range | Typical Use |
+|---------|-----------|--------------|-------------|
+| AAC-LC | Low Complexity | 8-320 kbps | General audio |
+| HE-AAC | High Efficiency | 16-128 kbps | Low bitrate |
+| HE-AAC v2 | High Efficiency v2 | 8-64 kbps | Very low bitrate |
+| AAC-LD | Low Delay | 32-256 kbps | Interactive |
+| AAC-ELD | Enhanced Low Delay | 32-128 kbps | Communication |
+| xHE-AAC | Extended HE-AAC | 12-64 kbps | Unified speech/music |
+
+### 23.2 Opus Application Modes
+
+| Mode | Application | Frame Duration | Use Case |
+|------|-------------|---------------|----------|
+| `voip` | Voice over IP | 10-60ms | Telephony |
+| `audio` | General audio | 10-120ms | Music |
+| `lowdelay` | Low delay | 2.5-20ms | Real-time |
+
+### 23.3 MP3 Frame Sizes
+
+| Bitrate | Frame Size (44.1kHz) | Frame Duration |
+|---------|---------------------|---------------|
+| 128 kbps | 417 bytes | 26.1 ms |
+| 192 kbps | 626 bytes | 26.1 ms |
+| 256 kbps | 835 bytes | 26.1 ms |
+| 320 kbps | 1044 bytes | 26.1 ms |
+
+MP3 frames always contain 1152 PCM samples. Frame size = (144 x bitrate) / sample_rate.
+
+## 24. ENERGY EFFICIENCY REFERENCE
+
+### 24.1 Encoding Power Consumption by Mode
+
+| Encoding Mode | CPU Usage | Power Draw | Use Case |
+|--------------|----------|-----------|---------|
+| FLAC level 0 | Low | ~5W | Real-time, low-power |
+| FLAC level 8 | Medium | ~15W | Batch encoding |
+| MP3 CBR | Medium | ~12W | Streaming server |
+| MP3 VBR | High | ~18W | High-quality encoding |
+| Opus | Medium | ~10W | Efficient, modern |
+| AAC | High | ~20W | High-quality |
+
+### 24.2 Storage Efficiency by Format
+
+| Format | Size (3-min song) | Storage per 1000 songs | Energy per year |
+|--------|------------------|----------------------|----------------|
+| FLAC (level 8) | ~30 MB | 30 GB | ~5 kWh |
+| Opus 128k | ~2.9 MB | 2.9 GB | ~0.5 kWh |
+| MP3 192k VBR | ~4.3 MB | 4.3 GB | ~0.7 kWh |
+| AAC 256k | ~5.7 MB | 5.7 GB | ~1 kWh |
 
 ---
 
 *File generated for: DBpoweramp-equivalent audio converter knowledge base*
 *Depth target: Complete FFmpeg rate control reference*
 *[NEEDS VERIFICATION] markers indicate claims requiring additional source confirmation*
+
+## 25. GLOSSARY
+
+| Term | Definition |
+|------|------------|
+| ABR | Average Bitrate — encoding mode targeting average bitrate |
+| CBR | Constant Bitrate — fixed bitrate throughout the file |
+| CRF | Constant Rate Factor — quality-based encoding mode |
+| VBR | Variable Bitrate — bitrate varies based on content complexity |
+| CVBR | Constrained VBR — VBR with a maximum bitrate cap |
+| MDCT | Modified Discrete Cosine Transform — core transform in many codecs |
+| Transparency | Perceptually indistinguishable from original |
+| Psy模型的 | Psychoacoustic model — perceptual masking analysis |
+| Bit reservoir | MP3 mechanism allowing temporary bit borrowing |
+| Frame | Fixed-size chunk of encoded audio samples |
+
+---

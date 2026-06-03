@@ -1129,7 +1129,546 @@ ffmpeg -i input.mp3 -c:a flac -compression_level 8 \
 - [ ] Handle very long tag values (per container limits)
 - [ ] Handle unknown/custom tag fields
 - [ ] Handle multiple cover art images (front, back, etc.)
-- [ ] Handle missing optional fields (don't write empty tags)
+- [ ] Handle missing optional fields (do not write empty tags)
+
+---
+
+## 13. FFMPEG METADATA IN PIPELINES
+
+### 13.1 Reading Metadata with ffprobe
+
+```bash
+# JSON format (best for programmatic use)
+ffprobe -v quiet -print_format json -show_format -show_streams input.flac | jq .
+
+# Extract all tags
+ffprobe -v quiet -show_entries format_tags -of default=noprint_wrappers=1 input.flac
+
+# Extract specific tag
+ffprobe -v quiet -show_entries format_tags=title,artist,album \
+  -of default=noprint_wrappers=1:nokey=1 input.flac
+
+# Extract cover art as binary
+ffprobe -v quiet -show_entries stream=codec_type,codec_name \
+  -of default=noprint_wrappers=1 input.m4a
+
+# Extract chapter information
+ffprobe -v quiet -show_chapters input.flac
+
+# Extract all metadata including chapters and streams
+ffprobe -v quiet -show_format -show_streams -show_chapters \
+  -print_format json input.flac | jq .
+```
+
+### 13.2 Batch Metadata Extraction
+
+```bash
+#!/bin/bash
+# extract_metadata.sh — Extract metadata from all audio files
+
+for file in *.flac *.mp3 *.m4a *.ogg *.opus; do
+    if [ -f "$file" ]; then
+        echo "=== $file ==="
+        ffprobe -v quiet -show_entries format_tags=title,artist,album,date,genre \
+          -of default=noprint_wrappers=1:nokey=1 "$file"
+        echo ""
+    fi
+done
+
+# Using jq for JSON output
+for file in *.flac; do
+    if [ -f "$file" ]; then
+        echo "$file:"
+        ffprobe -v quiet -print_format json -show_format "$file" | \
+          jq -r '.format.tags | "\(.title // "N/A") by \(.artist // "N/A")"'
+    fi
+done
+```
+
+### 13.3 Writing Metadata in Pipelines
+
+```bash
+# Read metadata from source, write to destination
+SOURCE="source.flac"
+ffprobe -v quiet -show_entries format_tags=title,artist,album,genre,date \
+  -of default=noprint_wrappers=1 "$SOURCE" > tags.txt
+
+ffmpeg -i "$SOURCE" -c:a libopus -b:a 128k \
+  -i tags.txt -map_metadata 1 output.opus
+
+# Inline metadata writing
+ffmpeg -i input.wav -c:a libopus -b:a 128k \
+  -metadata title="Track Title" \
+  -metadata artist="Artist Name" \
+  -metadata album="Album Name" \
+  -metadata date="2024" \
+  -metadata genre="Electronic" \
+  output.opus
+
+# Conditional metadata (using shell variables)
+TITLE="My Song"
+ARTIST="My Artist"
+ffmpeg -i input.wav -c:a libopus -b:a 128k \
+  -metadata title="$TITLE" \
+  -metadata artist="$ARTIST" \
+  output.opus
+```
+
+### 13.4 Metadata Normalization
+
+```bash
+# Normalize metadata: trim whitespace, fix capitalization
+#!/bin/bash
+for file in *.mp3; do
+    # Extract tags
+    TITLE=$(ffprobe -v quiet -show_entries format_tags=title \
+      -of default=noprint_wrappers=1:nokey=1 "$file")
+    ARTIST=$(ffprobe -v quiet -show_entries format_tags=artist \
+      -of default=noprint_wrappers=1:nokey=1 "$file")
+
+    # Normalize (trim, capitalize)
+    TITLE=$(echo "$TITLE" | xargs | sed 's/\b\(.\)/\U\1/g')
+    ARTIST=$(echo "$ARTIST" | xargs | sed 's/\b\(.\)/\U\1/g')
+
+    # Write back
+    ffmpeg -y -i "$file" -c:a copy \
+      -metadata title="$TITLE" \
+      -metadata artist="$ARTIST" \
+      "${file%.mp3}_normalized.mp3"
+done
+```
+
+---
+
+## 14. COVER ART HANDLING
+
+### 14.1 Cover Art Extraction and Replacement
+
+```bash
+# Extract first cover art (all formats)
+ffmpeg -i input.m4a -an -vcodec copy cover.jpg
+
+# Extract from FLAC
+ffmpeg -i input.flac -an -vcodec copy cover.png
+
+# Extract from OGG
+ffmpeg -i input.ogg -an -vcodec copy cover.jpg
+
+# Extract from MP3
+ffmpeg -i input.mp3 -an -vcodec copy cover.jpg
+
+# Extract all images (multiple covers)
+# Note: ffmpeg extracts only the first; use ffprobe for counting
+ffprobe -v quiet -show_entries stream=codec_type,width,height \
+  -of default=noprint_wrappers=1 input.m4a | grep video
+```
+
+### 14.2 Embedding Cover Art
+
+```bash
+# Embed in MP4/M4A
+ffmpeg -i input.m4a -i cover.jpg \
+  -c:a copy \
+  -map 0:a -map 1:v \
+  -disposition:v attached_pic \
+  output_with_cover.m4a
+
+# Embed in OGG
+ffmpeg -i input.ogg -i cover.jpg \
+  -c:a copy \
+  -map 0:a -map 1:v \
+  -metadata:s:v title="Cover" \
+  -metadata:s:v comment="Cover (front)" \
+  output_with_cover.ogg
+
+# Embed in Matroska
+ffmpeg -i input.mka -i cover.png \
+  -c:a copy \
+  -map 0:a -map 1:v \
+  -metadata:s:v title="Cover" \
+  output_with_cover.mka
+
+# Embed in MP3
+ffmpeg -i input.mp3 -i cover.jpg \
+  -c:a copy \
+  -map 0:a -map 1:v \
+  output_with_cover.mp3
+```
+
+### 14.3 Cover Art Conversion
+
+```bash
+# Convert JPEG to PNG for FLAC
+ffmpeg -i cover.jpg -f image2 cover.png
+
+# Resize cover to standard size (500x500 max)
+ffmpeg -i cover.jpg -vf "scale='min(500,iw)':min'(500,ih)':force_original_aspect_ratio=decrease" \
+  cover_500.jpg
+
+# Convert to specific format for container
+# FLAC prefers PNG or JPEG
+ffmpeg -i cover.png cover_for_flac.png
+```
+
+### 14.4 Multiple Cover Art
+
+Some containers support multiple cover images:
+
+| Container | Multiple Covers | Method |
+|-----------|--------------|--------|
+| MP4 | Yes | Multiple `covr` atoms |
+| Matroska | Yes | Multiple `ATTACHED_PICTURE` tags |
+| Vorbis | Yes | Multiple `METADATA_BLOCK_PICTURE` |
+| FLAC | Yes | Multiple PICTURE blocks |
+| MP3 | Yes | Multiple APIC frames |
+| WAV | No | Not supported |
+| AIFF | No | Via ID3 chunk |
+
+```bash
+# Embed multiple covers in Matroska
+ffmpeg -i input.mka -i front.jpg -i back.jpg -i booklet.png \
+  -c:a copy \
+  -map 0:a -map 1:v -map 2:v -map 3:v \
+  -metadata:s:v:0 title="Front cover" \
+  -metadata:s:v:1 title="Back cover" \
+  -metadata:s:v:2 title="Booklet" \
+  output_multi_cover.mka
+```
+
+---
+
+## 15. REPLAYGAIN IMPLEMENTATION
+
+### 15.1 ReplayGain Scanning
+
+ReplayGain requires scanning the audio to measure loudness:
+
+```bash
+# EBU R128 loudness scanning (FFmpeg built-in)
+ffmpeg -i input.wav -af loudnorm=print_format=json -f null -
+
+# Output example:
+# {
+#   "input_i": "-16.42",
+#   "input_tp": "-1.24",
+#   "input_lra": "6.52",
+#   "input_thresh": "-26.84",
+#   "output_i": "-16.00",
+#   "output_tp": "-1.00",
+#   "output_lra": "6.52",
+#   "output_thresh": "-25.84",
+#   "normalization_type": "dynamic",
+#   "target_offset": "0.00"
+# }
+```
+
+### 15.2 Applying ReplayGain
+
+```bash
+# Write ReplayGain tags
+ffmpeg -i input.wav -c:a copy \
+  -metadata REPLAYGAIN_TRACK_GAIN="-6.20 dB" \
+  -metadata REPLAYGAIN_TRACK_PEAK="0.998459" \
+  output_with_rg.wav
+
+# Scan and write in one pass (requires external tool like r128gain)
+# r128gain input.wav
+```
+
+### 15.3 Applying Loudness Normalization
+
+```bash
+# Normalize to -16 LUFS (streaming standard)
+ffmpeg -i input.wav -af loudnorm=I=-16:TP=-1:LRA=11 \
+  -c:a libopus -b:a 128k normalized.opus
+
+# Two-pass normalization (for maximum accuracy)
+ffmpeg -i input.wav -af loudnorm=I=-16:TP=-1:LRA=11:print_format=json -f null - 2>&1 | \
+  grep -E "I:|TP:|LRA:|Thresh:" > stats.txt
+
+# Apply with measured values
+ffmpeg -i input.wav \
+  -af loudnorm=I=-16:TP=-1:LRA=11:measured_I=-16.42:measured_TP=-1.24:measured_LRA=6.52:measured_thresh=-26.84 \
+  -c:a libopus -b:a 128k normalized.opus
+```
+
+---
+
+## 16. MUSICBRAINZ INTEGRATION
+
+### 16.1 MusicBrainz IDs in Metadata
+
+MusicBrainz IDs are UUIDs that uniquely identify entities:
+
+```bash
+# Read MusicBrainz IDs from FLAC
+ffprobe -v quiet -show_entries format_tags= \
+  -of default=noprint_wrappers=1 input.flac | grep MUSICBrainz
+
+# Write MusicBrainz IDs
+ffmpeg -i input.wav -c:a copy \
+  -metadata "MusicBrainz Track Id"="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" \
+  -metadata "MusicBrainz Album Id"="yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy" \
+  -metadata "MusicBrainz Artist Id"="zzzzzzzz-yyyy-yyyy-yyyy-yyyyyyyyyyyy" \
+  output_with_mb.flac
+```
+
+### 16.2 Using MusicBrainz Lookup
+
+```bash
+# Install musicbrainz-cli or Picard for lookup
+# Then tag from lookup results
+musicbrainz-cli tag --file input.wav --album-id <MB_ALBUM_ID>
+
+# Or use picard in batch
+picard --no-player --no-singleton-albums *.wav
+```
+
+---
+
+## 17. SPECIALIZED METADATA OPERATIONS
+
+### 17.1 Handling Multi-Value Fields
+
+Vorbis comments support multiple values per field:
+
+```
+ARTIST=Artist One
+ARTIST=Artist Two
+TITLE=Main Title
+TITLE=Remastered Version
+```
+
+```bash
+# Create multi-value tags
+ffmpeg -i input.wav -c:a flac \
+  -metadata TITLE="Main Title" \
+  -metadata TITLE="Remastered Version" \
+  output_multi.flac
+
+# Read multi-value tags
+ffprobe -v quiet -show_entries format_tags=TITLE \
+  -of default=noprint_wrappers=1 input.flac
+```
+
+### 17.2 Sort Fields and Normalization
+
+```bash
+# Write sort fields for proper alphabetical sorting
+ffmpeg -i input.wav -c:a copy \
+  -metadata title="The Song Title" \
+  -metadata sort_title="Song Title, The" \
+  -metadata artist="The Artist Name" \
+  -metadata sort_artist="Artist Name, The" \
+  -metadata album="Album Name" \
+  -metadata sort_album="Album Name" \
+  output_sorted.flac
+```
+
+### 17.3 Custom/User-Defined Fields
+
+```bash
+# Write custom fields
+ffmpeg -i input.wav -c:a copy \
+  -metadata SOURCE="Vinyl (Original Pressing)" \
+  -metadata ENCODER="My Encoder v1.0" \
+  -metadata MY_CUSTOM_FIELD="Custom Value" \
+  output_custom.flac
+
+# MP4 uses freeform atoms for custom fields
+ffmpeg -i input.wav -c:a alac \
+  -metadata "----:com.apple.iTunes:SOURCE"="Vinyl (Original Pressing)" \
+  -metadata "----:com.apple.iTunes:MY_CUSTOM_FIELD"="Custom Value" \
+  output_custom.m4a
+```
+
+### 17.4 Removing Specific Tags
+
+```bash
+# Remove all tags
+ffmpeg -i input.wav -c:a copy -map_metadata -1 output_clean.flac
+
+# Remove specific tag (set to empty)
+ffmpeg -i input.wav -c:a copy -metadata title="" output_notitle.flac
+
+# Remove genre only
+ffprobe -v quiet -show_entries format_tags -of default=noprint_wrappers=1 input.flac | \
+  grep -v "^genre=" | ffmpeg -i input.flac -c:a copy -i - -map_metadata 0 output_nogenre.flac
+```
+
+---
+
+## 18. METADATA VALIDATION
+
+### 18.1 Validation Checklist
+
+```bash
+# Check all standard tags are present
+ffprobe -v quiet -show_entries format_tags=title,artist,album,date,genre,track \
+  -of default=noprint_wrappers=1 input.flac
+
+# Check for invalid characters
+ffprobe -v quiet -show_entries format_tags -of json input.flac | \
+  jq '.format.tags | to_entries[] | select(.value | test("[\\x00-\\x1F]"))'
+
+# Check tag length limits
+# Vorbis: No hard limit (practical ~8192 bytes per tag)
+# MP4: 255 bytes per atom value
+# ID3v2: 64 KB per frame
+
+# Check cover art size
+ffprobe -v quiet -show_entries stream=width,height \
+  -of default=noprint_wrappers=1 input.m4a | grep -E "width|height"
+
+# Check ReplayGain format
+ffprobe -v quiet -show_entries format_tags=REPLAYGAIN_TRACK_GAIN \
+  -of default=noprint_wrappers=1 input.flac | \
+  grep -E "^[+-][0-9]+\.[0-9]+ dB$" || echo "Invalid format"
+```
+
+### 18.2 Automated Validation Script
+
+```bash
+#!/bin/bash
+# validate_metadata.sh
+
+validate_file() {
+    local file="$1"
+    echo "Validating: $file"
+
+    # Check required tags
+    ffprobe -v quiet -show_entries format_tags=title,artist,album \
+      -of default=noprint_wrappers=1 "$file" | \
+      while IFS= read -r line; do
+        if [ -z "$line" ]; then
+          echo "  WARNING: Empty required tag"
+        else
+          echo "  $line"
+        fi
+      done
+
+    # Check ReplayGain format
+    RG_GAIN=$(ffprobe -v quiet -show_entries format_tags=REPLAYGAIN_TRACK_GAIN \
+      -of default=noprint_wrappers=1:nokey=1 "$file")
+    if [[ "$RG_GAIN" =~ ^[+-][0-9]+\.[0-9]+[[:space:]]dB$ ]]; then
+        echo "  ReplayGain OK"
+    elif [ -n "$RG_GAIN" ]; then
+        echo "  WARNING: Invalid ReplayGain format: $RG_GAIN"
+    fi
+
+    echo ""
+}
+
+for f in "$@"; do
+    if [ -f "$f" ]; then
+        validate_file "$f"
+    fi
+done
+```
+
+---
+
+## 19. CROSS-CONTAINER METADATA CONVERSION
+
+### 19.1 FLAC to Any Format
+
+```bash
+# FLAC to MP3 (Vorbis -> ID3)
+ffmpeg -i input.flac -c:a libmp3lame -q:a 2 \
+  -map_metadata 0 \
+  output.mp3
+
+# FLAC to AAC (Vorbis -> iTunes atoms)
+ffmpeg -i input.flac -c:a libfdk_aac -vbr 4 \
+  -movflags +faststart \
+  -map_metadata 0 \
+  output.m4a
+
+# FLAC to Opus (Vorbis -> Vorbis)
+ffmpeg -i input.flac -c:a libopus -b:a 128k \
+  -map_metadata 0 \
+  output.opus
+```
+
+### 19.2 MP3 to Any Format
+
+```bash
+# MP3 to FLAC (ID3 -> Vorbis)
+ffmpeg -i input.mp3 -c:a flac -compression_level 8 \
+  -map_metadata 0 \
+  output.flac
+
+# MP3 to AAC (ID3 -> iTunes atoms)
+ffmpeg -i input.mp3 -c:a libfdk_aac -vbr 4 \
+  -movflags +faststart \
+  -map_metadata 0 \
+  output.m4a
+```
+
+### 19.3 Preserving All Metadata
+
+```bash
+# Use a metadata preservation workflow
+# 1. Extract all metadata
+ffprobe -v quiet -print_format json -show_format input.flac > metadata.json
+
+# 2. Transcode
+ffmpeg -i input.flac -c:a libopus -b:a 128k temp.opus
+
+# 3. Apply metadata from JSON
+TITLE=$(jq -r '.format.tags.title' metadata.json)
+ARTIST=$(jq -r '.format.tags.artist' metadata.json)
+ALBUM=$(jq -r '.format.tags.album' metadata.json)
+
+ffmpeg -i temp.opus -c:a copy \
+  -metadata title="$TITLE" \
+  -metadata artist="$ARTIST" \
+  -metadata album="$ALBUM" \
+  output.opus
+
+rm metadata.json temp.opus
+```
+
+---
+
+## 20. APPENDIX: TAG LIMITS
+
+### 20.1 Tag Value Length Limits
+
+| Container | Tag Value Limit | Notes |
+|-----------|----------------|-------|
+| ID3v2.3 | 64 KB per frame | Maximum frame size |
+| ID3v2.4 | 256 MB per frame | Maximum frame size |
+| Vorbis | ~8 KB per tag (practical) | No spec limit |
+| MP4 | 255 bytes per atom value | Hard limit |
+| FLAC | Same as Vorbis | Uses Vorbis comments |
+| WAV | 256 bytes per chunk | RIFF INFO limit |
+| AIFF | 256 bytes per chunk | ANNO limit |
+| Matroska | No limit | EBML allows large values |
+
+### 20.2 Tag Name Length Limits
+
+| Container | Tag Name Limit | Notes |
+|-----------|----------------|-------|
+| ID3v2 | 4 bytes (4 chars) | Fixed-length frame IDs |
+| Vorbis | No limit | UTF-8 string |
+| MP4 | 4 bytes | 4-char atom codes |
+| FLAC | Same as Vorbis | Uses Vorbis comments |
+| WAV | 4 bytes | Chunk ID length |
+| AIFF | 4 bytes | Chunk ID length |
+| Matroska | No limit | UTF-8 string |
+
+### 20.3 Character Encoding Support
+
+| Container | ASCII | Latin-1 | UTF-8 | UTF-16 | Notes |
+|-----------|-------|---------|-------|--------|-------|
+| ID3v2 | Yes | Yes | Yes | Yes | Text encoding byte per frame |
+| Vorbis | Yes | Yes | Yes | No | UTF-8 only |
+| MP4 | Yes | Yes | Yes | Yes | UTF-8 or UTF-16 |
+| FLAC | Yes | Yes | Yes | No | UTF-8 only |
+| WAV | Yes | Yes | No | No | Latin-1/ASCII only |
+| AIFF | Yes | Yes | Yes | No | Via ID3 chunk |
+| Matroska | Yes | Yes | Yes | No | UTF-8 only |
 
 ---
 

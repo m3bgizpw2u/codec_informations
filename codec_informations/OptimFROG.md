@@ -20,22 +20,50 @@
 - **Original Purpose:** Maximum-compression lossless audio for archival
 - **Problem with Predecessors:** FLAC and other codecs of the era prioritized speed over compression. OptimFROG was designed to achieve the absolute best compression ratios, even at the cost of encoding speed.
 
+Florin Ghido developed OptimFROG as a research project to explore the limits of lossless audio compression. While other codecs like FLAC balanced compression efficiency with encoding/decoding speed, OptimFROG was designed purely for maximum compression, accepting that encoding would be significantly slower.
+
+The development was influenced by:
+1. **Early lossless codecs** (Shorten, La) that showed potential for high compression
+2. **Arithmetic coding research** from data compression literature
+3. **Adaptive filtering techniques** from speech coding
+4. **Optimal prediction theory** from signal processing
+
+Key innovations included:
+- Generalized stereo decorrelation (GSD)
+- Multi-layer adaptive filtering
+- Range coder (arithmetic coding) for entropy coding
+- Floating-point prediction coefficients
+
 ### 1.2 Version History
 | Version | Year | Key Changes |
 |---------|------|-------------|
 | 1.0 | 2000 | Initial release, basic lossless compression |
-| 3.x | 2001 | Improved compression, APEv2 tagging |
+| 2.x | 2001 | Improved compression, early stereo support |
+| 3.x | 2001 | Enhanced prediction, APEv2 tagging |
 | 4.0 | December 2001 | Generalized stereo decorrelation, optimal predictor |
-| 4.5 | 2003 | Better compression, bug fixes |
-| 5.0 | 2010 | Floating-point support, DualStream hybrid |
-| 5.100 | September 2016 | Final release |
+| 4.5 | 2003 | Better compression, bug fixes, multi-channel support |
+| 4.6 | 2004 | Further improvements, stability |
+| 5.0 | 2010 | Floating-point WAV support, DualStream hybrid lossy/lossless |
+| 5.100 | September 2016 | Final release, bug fixes |
+
+Key milestones:
+- 2000: First public release
+- 2001: Introduction of GSD with version 4.0
+- 2003: Multi-channel support
+- 2010: Floating-point audio and DualStream mode
+- 2016: Final release
 
 ### 1.3 Current Adoption
-- **Primary use cases today:** Maximum-efficiency archival, audio quality comparison benchmarks
+- **Primary use cases today:** Maximum-efficiency archival, audio quality comparison benchmarks, specialized audio archives
 - **Platforms with native support:** Windows, Linux, macOS, FreeBSD
 - **Major services using this format:** None (niche archival format)
 - **Hardware support:** No hardware support
 - **Status:** Legacy — primarily used for archival comparisons and benchmarks
+
+OptimFROG is primarily used today in:
+- Audio codec comparison benchmarks (a reference point for maximum compression)
+- Specialized archival projects requiring maximum density
+- Research into lossless compression limits
 
 ---
 
@@ -48,24 +76,40 @@
 - **Frame-based vs sample-based:** Frame-based; variable-length frames with error detection
 - **Fixed vs variable frame size:** Variable frame size, dynamically determined
 
+OptimFROG represents the most complex approach to lossless audio compression among common codecs:
+
+1. **Multi-layer adaptive filtering** for accurate signal modeling
+2. **Floating-point coefficients** for precise prediction
+3. **Range coding** for near-optimal entropy coding
+4. **Generalized stereo decorrelation** for inter-channel redundancy reduction
+
 ### 2.2 High-Level Encoding Flow (Block Diagram)
 ```
-Input PCM Samples
+Input PCM Samples (WAV Format)
       │
       ▼
 [Pre-processing: WAV header parsing, format validation]
       │
       ▼
-[Channel Decorrelation: Generalized stereo decorrelation]
+[Channel Decorrelation: Generalized stereo decorrelation (GSD)]
       │
       ▼
 [Adaptive Filtering: Multi-layer filter cascade]
+      │
+      │   Stage 1: High-order LMS filter (floating-point)
+      │   Stage 2: Medium-order LMS filter
+      │   Stage 3: Low-order LMS filter
+      │   Stage 4: Optional additional stages
       │
       ▼
 [Prediction: Multiple specialized predictors]
       │
       ▼
 [Entropy Coding: Range coder (arithmetic coding)]
+      │
+      │   - Precise probability modeling
+      │   - Context-based probability estimation
+      │   - Adaptive probability updates
       │
       ▼
 [Bitstream Packing: Chunk format + optional correction stream]
@@ -97,6 +141,8 @@ Offset  Bytes   Hex Value        ASCII     Meaning
        or 4F 46 52 58           OFRX      OptimFROG Safe signature
 ```
 
+The "OFR " signature (with trailing space) is the standard OptimFROG identifier, while "OFRX" denotes the "Safe" variant with enhanced error detection.
+
 ### 3.2 File-Level Header Layout
 OptimFROG uses a chunk-based format with specific chunk identifiers:
 
@@ -116,17 +162,28 @@ Offset   Size    Field Name              Type        Description
 #### Format ID Values
 | Value | Format | Description |
 |-------|--------|-------------|
-| 0 | u8 | Unsigned 8-bit |
-| 1 | s8 | Signed 8-bit |
-| 2 | u16 | Unsigned 16-bit |
-| 3 | s16 | Signed 16-bit |
-| 4 | u24 | Unsigned 24-bit |
-| 5 | s24 | Signed 24-bit |
-| 6 | u32 | Unsigned 32-bit |
-| 7 | s32 | Signed 32-bit |
-| 8 | f32_1 | 32-bit float (-1.0 to 1.0) |
+| 0 | u8 | Unsigned 8-bit PCM |
+| 1 | s8 | Signed 8-bit PCM |
+| 2 | u16 | Unsigned 16-bit PCM |
+| 3 | s16 | Signed 16-bit PCM |
+| 4 | u24 | Unsigned 24-bit PCM |
+| 5 | s24 | Signed 24-bit PCM |
+| 6 | u32 | Unsigned 32-bit PCM |
+| 7 | s32 | Signed 32-bit PCM |
+| 8 | f32_1 | 32-bit float (-1.0 to 1.0 range) |
 | 9 | f32_16 | 32-bit float (scaled by 32768) |
 | 10 | f32_24 | 32-bit float (scaled by 8388608) |
+
+#### Encoding Method Values
+| Bits | Method | Speed | Compression |
+|------|--------|-------|-------------|
+| 0 | fast | Fastest | Lowest |
+| 1 | normal | Medium | Medium |
+| 2 | high | Slow | High |
+| 3 | extra | Very slow | Very high |
+| 4 | best | Slowest | Highest |
+| 5 | ultra | Ultra slow | Maximum |
+| 6 | insane | Slowest | Benchmark |
 
 ### 3.3 Chunk Structure
 OptimFROG files consist of chunks:
@@ -206,23 +263,61 @@ OptimFROG introduced a sophisticated stereo decorrelation technique:
 
 ```
 GSD Process:
-  1. Compute correlation between L and R channels
-  2. Apply optimal rotation in signal space
-  3. Encode transformed channels independently
-  4. Results in better compression than simple M/S
+  1. Compute correlation matrix between L and R channels
+  2. Apply optimal rotation matrix R in signal space:
+     M = (L + R) / sqrt(2)      [Mid component]
+     S = (L - R) / sqrt(2)      [Side component]
+     
+  3. For more complex stereo, apply channel mixing matrix:
+     [C1]   [m11 m12] [L]
+     [C2] = [m21 m22] [R]
+     
+  4. Encode transformed channels (C1, C2) independently
+  5. Store mixing matrix coefficients for decoding
+  
+Advantages over simple M/S:
+  - Adapts to actual channel correlation
+  - Better compression for non-standard stereo
+  - Handles phase differences optimally
 ```
 
 #### Adaptive Filtering (Multi-Layer)
 ```
 Filter Stages:
   Stage 1: Primary adaptive LMS filter (floating-point coefficients)
+    - High-order filter (configurable)
+    - Uses floating-point arithmetic for precision
+    - Adapts coefficients per-block
+    
   Stage 2: Secondary filter processing residuals
+    - Medium-order filter
+    - Further reduces remaining correlation
+    
   Stage 3: Optional additional filter layers
+    - Low-order filters
+    - Final polishing of residuals
+    
   Output: Final residuals for entropy coding
   
 Key Innovation:
   Uses floating-point arithmetic internally (unlike most lossless codecs)
   Coefficients adapt per-block
+  Provides superior prediction accuracy
+```
+
+**LMS (Least Mean Squares) Filter Algorithm:**
+```
+For each sample n:
+  1. Compute prediction:
+     ŷ[n] = Σ(k=1 to p) w[k] × x[n-k]
+     
+  2. Compute error:
+     e[n] = x[n] - ŷ[n]
+     
+  3. Update weights (LMS rule):
+     w[k] = w[k] + μ × e[n] × x[n-k]
+     
+  where μ is the step size (adaptation rate)
 ```
 
 ### 4.3 Psychoacoustic Model (Not Applicable)
@@ -242,16 +337,31 @@ OptimFROG uses **no quantization** — it is a purely lossless codec.
 ```
 Method: Range Coder (Arithmetic Coding)
 
-Range coder properties:
-  - Uses probability estimation
-  - More efficient than Huffman for correlated symbols
-  - Computationally more expensive
-  - Adapts to local statistics
+Range coder is a form of arithmetic coding:
+
+Encoding Process:
+  1. Maintain interval [low, high)
+  2. For each symbol:
+     - Get probability P of symbol
+     - Subdivide interval proportionally
+     - Update: interval_size = interval_size × P
+     - Output bits as interval narrows
+     
+  3. Output final interval value
   
-Parameters:
-  - Precise probability modeling
-  - Context-based probability estimation
-  - Achieves near-theoretical compression limits
+Decoding Process:
+  1. Initialize interval from known bounds
+  2. For each symbol:
+     - Determine which subdivision current value falls in
+     - Output symbol
+     - Update interval to selected subdivision
+     
+Properties:
+  - Achieves near-entropy coding efficiency
+  - Uses precise probability estimation
+  - Adapts to local statistics
+  - More efficient than Huffman for correlated symbols
+  - Computationally more expensive than Huffman/Rice
 ```
 
 ### 4.7 Encoder Settings / Quality Modes
@@ -267,13 +377,14 @@ Parameters:
 | ultra | Ultra slow | Maximum | Extreme compression |
 | insane | Slowest | Maximum | Benchmark mode |
 
-#### Encoding Speed Multipliers
-| Preset | Encode Speed (i7 6700HQ) | Decode Speed |
+#### Encoding Speed Multipliers (Intel Core i7 6700HQ @ 2.6GHz)
+| Preset | Encode Speed | Decode Speed |
 |--------|-------------------------|--------------|
 | 0 (fast) | 140x real-time | 138x real-time |
 | 1 (normal) | 66.9x real-time | 96.9x real-time |
 | 2 (high) | ~20x real-time | ~80x real-time |
 | 3 (extra) | ~10x real-time | ~60x real-time |
+| 4 (best) | ~5x real-time | ~50x real-time |
 
 ---
 
@@ -284,9 +395,19 @@ Parameters:
 #### Sync Strategy
 ```
 1. Scan for "OFR " or "OFRX" magic bytes
+   - Start from file beginning
+   - Match exactly 4 bytes
+   
 2. Parse and validate header chunk
+   - Read all header fields
+   - Validate format parameters
+   
 3. Iterate through COMP chunks
-4. Each chunk contains CRC for validation
+   - Each chunk contains CRC for validation
+   - Read chunk size and data
+   
+4. Handle TAIL chunk
+   - Marks end of audio data
 ```
 
 #### Seeking
@@ -322,6 +443,9 @@ Parameters:
 
 5. Apply inverse stereo decorrelation
    └── Reverse GSD transformation
+   
+6. Output samples
+   └── Format conversion if needed
 ```
 
 ### 5.3 Error Concealment
@@ -361,16 +485,16 @@ Parameters:
 ### 7.2 Standard Tag Fields — Complete Reference
 | Tag Field | Internal Key (APEv2) | Max Length | Character Encoding | Multi-value | Notes |
 |-----------|---------------------|------------|-------------------|-------------|-------|
-| Title | TITLE | 255 bytes | UTF-8 | No | |
-| Artist | ARTIST | 255 bytes | UTF-8 | No | |
-| Album | ALBUM | 255 bytes | UTF-8 | No | |
-| Album Artist | ALBUMARTIST | 255 bytes | UTF-8 | No | |
-| Composer | COMPOSER | 255 bytes | UTF-8 | No | |
-| Genre | GENRE | 255 bytes | UTF-8 | No | |
-| Year / Date | YEAR or DATE | 4 bytes | ASCII | No | |
+| Title | TITLE | 255 bytes | UTF-8 | No | Track title |
+| Artist | ARTIST | 255 bytes | UTF-8 | No | Performer |
+| Album | ALBUM | 255 bytes | UTF-8 | No | Album name |
+| Album Artist | ALBUMARTIST | 255 bytes | UTF-8 | No | Album performer |
+| Composer | COMPOSER | 255 bytes | UTF-8 | No | Composer |
+| Genre | GENRE | 255 bytes | UTF-8 | No | Genre classification |
+| Year / Date | YEAR or DATE | 4 bytes | ASCII | No | Release year |
 | Track Number | TRACK | 10 bytes | ASCII | No | Format: "N" or "N/Total" |
-| Disc Number | DISC | 10 bytes | ASCII | No | |
-| Comment | COMMENT | 1000 bytes | UTF-8 | No | |
+| Disc Number | DISC | 10 bytes | ASCII | No | Format: "N" or "N/Total" |
+| Comment | COMMENT | 1000 bytes | UTF-8 | No | Freeform comment |
 | Encoder | ENCODER | 64 bytes | UTF-8 | No | Software and version |
 | ReplayGain Track Gain | REPLAYGAIN_TRACK_GAIN | 20 bytes | ASCII | No | Format: "-6.20 dB" |
 | ReplayGain Track Peak | REPLAYGAIN_TRACK_PEAK | 20 bytes | ASCII | No | Format: "0.998459" |

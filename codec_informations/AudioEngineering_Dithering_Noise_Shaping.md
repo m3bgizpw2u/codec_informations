@@ -967,7 +967,736 @@ void ns_dither_16bit(const float *input, int16_t *output,
 
 ---
 
+## 14. ADVANCED DITHERING TOPICS
+
+### 14.1 n-th Order Dither (nRPDF)
+
+The concept of TPDF (2RPDF) can be extended to higher orders:
+- **1RPDF:** Rectangular (uniform) — first-order, flat spectrum
+- **2RPDF:** Triangular (TPDF) — second-order, first spectral moment = 0
+- **3RPDF:** Third-order, second spectral moment = 0
+- **nRPDF:** n-th order, (n-1)-th spectral moment = 0
+
+Higher-order dither provides better linearization at the cost of higher noise amplitude:
+$$V_{nRPDF} = \sum_{i=1}^{n} RPDF_i$$
+
+For nRPDF with range $[-n\Delta/2, n\Delta/2]$, the noise amplitude grows as $\sqrt{n}$ but the linearization quality improves.
+
+### 14.2 Signal-Dependent Dither
+
+Traditional dither adds a fixed-amplitude noise regardless of signal level. Signal-dependent dither varies the dither amplitude based on the input signal's proximity to quantization boundaries:
+- Less dither for signals well within a quantization step
+- Full dither for signals near step boundaries
+- Reduces the added noise floor for signals that are already well-resolved
+
+### 14.3 Blurred Dither (Perceptual Dither)
+
+Blurred dither uses a noise signal that is pre-filtered to match the noise masking curve of the human ear:
+- Less noise energy in the 1–6 kHz region (most sensitive)
+- More noise energy at DC and above 15 kHz (less sensitive)
+- Can achieve the same perceptual quality with lower total noise power
+- Also called "perceptually shaped dither" or "ATH-weighted dither"
+
+### 14.4 Multi-Stage Dithering
+
+For cascading format conversions (e.g., 24-bit → 16-bit → 12-bit), dither should be applied:
+1. At each quantization boundary where bit depth is reduced
+2. With appropriate amplitude for each stage's LSB size
+
+**Example: 24-bit → 16-bit → 12-bit**
+```
+Stage 1: Add TPDF with amplitude 0.5 LSB (24-bit), quantize to 16-bit
+Stage 2: Add TPDF with amplitude 0.5 LSB (16-bit), quantize to 12-bit
+```
+
+### 14.5 Dithering in Lossy Codecs
+
+Lossy codecs (MP3, AAC, Opus) perform internal quantization that generates quantization noise. Whether to apply dithering before encoding:
+
+| Scenario | Recommendation |
+|----------|---------------|
+| High bitrate (320 kbps AAC, FLAC) | Dither optional — codec's internal quantization dominates |
+| Medium bitrate (192 kbps AAC) | Dither recommended for quiet passages |
+| Low bitrate (128 kbps MP3) | Dither can help preserve low-level dynamics |
+| Very low bitrate (< 64 kbps) | Dither minimal benefit — codec's artifacts dominate |
+
+### 14.6 Floating-Point Dithering
+
+When converting from 32-bit floating point to 24-bit integer:
+- The floating-point mantissa has non-uniform precision (relative to signal level)
+- The "effective LSB" varies with the exponent
+- Dither amplitude should match the effective LSB at the current level
+- Simple fixed-amplitude dither may over-dither quiet signals
+
+**Proper floating-point dithering:**
+```c
+// Calculate effective LSB for current sample
+float effective_lsb = ldexpf(1.0f, -24.0f - floorf(log2f(fabsf(sample))));
+
+// Dither with level-proportional amplitude
+float dither = tpdf_sample() * effective_lsb * 0.5f;
+```
+
+### 14.7 Dither and Bit-Shifting
+
+When converting between bit depths by bit-shifting (rather than quantization):
+- Bit-shifting is a lossless operation — dither is NOT needed
+- Example: Converting 24-bit to 16-bit by right-shifting 8 bits is lossless for the top 16 bits
+- Example: Converting 32-bit float to 24-bit by mantissa truncation — dither IS needed
+
+### 14.8 Dithering for A/B Comparisons
+
+When testing dither audibility:
+- Use A/B/X testing methodology
+- Test with signals near quantization boundary: sine waves at -80 to -70 dBFS
+- Test material: solo piano, solo violin (tonal content reveals harmonic distortion)
+- Without dither: harmonics are clearly audible
+- With TPDF: harmonics replaced by noise floor
+
+---
+
+## 15. NOISE SHAPING — DEEP MATHEMATICS
+
+### 15.1 Noise Transfer Function
+
+In a noise-shaped quantizer:
+
+$$Y(z) = X(z) + E(z) \cdot (1 - H(z))$$
+
+Where:
+- $X(z)$ = input signal
+- $Y(z)$ = output signal
+- $E(z)$ = quantization error
+- $H(z)$ = noise shaping filter transfer function
+
+The noise spectrum at the output:
+$$N(z) = E(z) \cdot (1 - H(z))$$
+
+To minimize noise in a frequency band $[f_1, f_2]$:
+$$|1 - H(f)| \approx 0 \text{ for } f \in [f_1, f_2]$$
+$$|1 - H(f)| \approx 1 \text{ for } f \notin [f_1, f_2]$$
+
+### 15.2 First-Order Noise Shaping Transfer Function
+
+$$H(z) = z^{-1}$$
+$$1 - H(z) = 1 - z^{-1}$$
+
+Frequency response:
+$$|1 - e^{-j\omega}| = 2\sin(\omega/2)$$
+
+This gives a high-shelf response — noise is amplified at high frequencies, reduced at low frequencies.
+
+### 15.3 Second-Order Noise Shaping
+
+$$H(z) = 2z^{-1} - z^{-2}$$
+$$1 - H(z) = 1 - 2z^{-1} + z^{-2} = (1 - z^{-1})^2$$
+
+Frequency response:
+$$|1 - e^{-j\omega}|^2 = 4\sin^2(\omega/2)$$
+
+More aggressive high-frequency boosting.
+
+### 15.4 Optimal Noise Shaping Filter Design
+
+For psychoacoustic optimization, design $H(z)$ such that the shaped noise spectrum $N(f)$ follows the inverse of the ATH curve:
+
+$$|N(f)|^2 \propto \frac{1}{ATH(f)}$$
+
+Where $ATH(f)$ is the Absolute Threshold of Hearing.
+
+### 15.5 IIR vs FIR Noise Shaping Filters
+
+**FIR noise shapers:**
+- Linear phase
+- Always stable
+- Can have very steep transitions
+- Higher computational cost
+
+**IIR noise shapers:**
+- Can be minimum phase
+- May be unstable (pole placement critical)
+- Lower computational cost
+- Commonly used in professional dithering systems
+
+### 15.6 Noise Shaping and Dither Interaction
+
+The choice of noise shaping is tightly coupled with dither:
+- TPDF dither is required for effective noise shaping above first-order
+- RPDF dither cannot provide linearization beyond first-order
+- Higher-order dither (3RPDF) enables more aggressive noise shaping
+
+---
+
+## 16. DITHER IN BROADCAST AND ARCHIVAL
+
+### 16.1 EBU R68 Requirements
+
+EBU R68 (2000) specifies:
+- Audio for digital broadcasting shall be quantized to at least 16 bits
+- Dithering shall be applied when reducing bit depth
+- TPDF dither is recommended
+- Peak level calibration: 0 dBFS = -18 dB on a PPM (Peak Programme Meter)
+
+### 16.2 Archival Best Practices
+
+For long-term digital archival:
+
+| Principle | Implementation |
+|-----------|---------------|
+| Preserve dynamic range | Use highest practical bit depth (24-bit minimum) |
+| Dither at delivery only | Apply dither only when creating distribution copies |
+| Use TPDF | Second-order dither provides best tonal linearity |
+| Consider noise shaping | Mild noise shaping for 16-bit delivery |
+| Document conversion chain | Record all SRC and dither operations |
+| Verify with test signals | Include calibration tones in archival files |
+
+### 16.3 Archival Format Recommendations
+
+| Use Case | Format | Bit Depth | Sample Rate | Dither |
+|----------|--------|-----------|-------------|--------|
+| Archival master | FLAC | 24-bit | 96 kHz | No (keep pristine) |
+| Distribution copy | FLAC | 24-bit | 96 kHz | No |
+| CD-ready copy | FLAC | 24-bit | 44.1 kHz | Yes (TPDF) |
+| Streaming master | FLAC | 24-bit | 44.1 or 48 kHz | Yes (TPDF+NS) |
+| Broadcast | WAV/BWF | 20-bit | 48 kHz | Yes (TPDF) |
+
+### 16.4 Test Tones for Dither Verification
+
+Include in archival files:
+- 997 Hz sine wave at -1 dBFS
+- 0 Hz (DC) offset at -20 dBFS
+- 0 Hz (DC) offset at -40 dBFS
+- Silence (all zeros)
+
+These enable verification of dither effectiveness in future conversions.
+
+---
+
+## 17. DITHERING IN DISTRIBUTED SYSTEMS
+
+### 17.1 DAW Internal Processing
+
+Modern DAWs process at 32-bit or 64-bit floating point internally:
+- No quantization occurs during mixing, EQ, or effects
+- Dither is applied only at:
+  1. Export to integer format
+  2. Real-time playback to hardware with limited bit depth
+
+### 17.2 Real-Time Playback Dithering
+
+When streaming to hardware DACs:
+- Most modern DACs (24-bit) do not need output dithering
+- Some 16-bit DACs benefit from TPDF dither
+- Hardware with volume control may re-quantize at each volume step
+
+### 17.3 Network Audio Streaming
+
+In networked audio systems (AES67, Dante, etc.):
+- Audio is transmitted at full precision (32-bit float or 24-bit)
+- Dithering occurs only at the final output stage
+- Sample rate conversion may occur at network bridges — verify SRC quality
+
+### 17.4 Multi-Rate Audio Systems
+
+When mixing sources at different sample rates:
+- Each source is resampled to the DAW's internal rate
+- Dither should be applied during SRC if the intermediate format has reduced precision
+- Final output dither is applied once at delivery
+
+---
+
+## 18. PSYCHOACOUSTIC FUNDAMENTALS FOR NOISE SHAPING
+
+### 18.1 Critical Bands
+
+The ear's frequency resolution follows critical bands (Bark scale):
+- Critical band $k$: $f_c = 25 + 75 \times [(1 + 1.4 \times k^2)^{0.69} - 1]$ Hz
+- Bandwidth doubles approximately every 3–4 bands
+
+| Critical Band | Center Frequency | Bandwidth |
+|--------------|-----------------|-----------|
+| 1 | 50 Hz | 100 Hz |
+| 2 | 150 Hz | 100 Hz |
+| 3 | 250 Hz | 100 Hz |
+| 4 | 350 Hz | 100 Hz |
+| 8 | 1050 Hz | ~150 Hz |
+| 15 | 4500 Hz | ~400 Hz |
+| 24 | 15500 Hz | ~2300 Hz |
+
+### 18.2 Simultaneous Masking
+
+A masker tone at level $L$ (dB SPL) can mask a signal at frequency $f$ if:
+$$L_{masker} - S(f) > ATH(f)$$
+
+Where $S(f)$ is the masking index, approximately:
+$$S(f) = 14.5 + 0.4 \times L_{masker} - \text{masking_index}(f - f_{masker})$$
+
+### 18.3 Noise Shaping Design Based on Masking
+
+A practical noise shaping filter should:
+1. Reduce noise power in critical bands where ATH is low (1–5 kHz)
+2. Allow noise power in bands where ATH is high (< 100 Hz, > 15 kHz)
+3. Have smooth transitions between bands to avoid spectral artifacts
+
+### 18.4 Effective SNR After Noise Shaping
+
+For a 16-bit system with noise shaping:
+- Flat noise floor: -93 dB (theoretical)
+- With 6 dB noise shaping in critical band: effective SNR ≈ -99 dB in that band
+- Perceptually equivalent to ~17–18 bits in the shaped region
+
+---
+
+## 19. DITHERING CODE EXAMPLES
+
+### 19.1 Complete Dither State Machine
+
+```c
+#include <stdint.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+
+typedef enum {
+    DITHER_NONE = 0,
+    DITHER_RECTANGULAR = 1,
+    DITHER_TRIANGULAR = 2,
+    DITHER_TRIANGULAR_HP = 3,
+    DITHER_TRIANGULAR_NS = 4,
+} DitherMethod;
+
+// Linear feedback shift register (LFSR) for fast PRNG
+typedef struct {
+    uint32_t state;
+    int method;
+    float amplitude;     // In LSBs of output format
+    float prev_dither;   // For high-pass dither
+    // Noise shaping state (2nd order)
+    float ns_b[3];      // FIR coefficients
+    float ns_x[2];      // Input delay
+    float ns_y[2];      // Output delay
+    float ns_prev_err;  // Previous error
+} DitherContext;
+
+uint32_t lfsr_next(uint32_t state) {
+    // Fibonacci LFSR with period 2^32-1
+    uint32_t bit = ((state >> 0) ^ (state >> 2) ^
+                    (state >> 3) ^ (state >> 5)) & 1;
+    return (state >> 1) | (bit << 31);
+}
+
+DitherContext *dither_init(DitherMethod method, float output_lsb) {
+    DitherContext *ctx = calloc(1, sizeof(DitherContext));
+    ctx->method = method;
+    ctx->amplitude = output_lsb * 0.5f; // 0.5 LSB for TPDF
+    ctx->state = 0xACE1; // Non-zero seed
+
+    // 2nd order noise shaping coefficients
+    // (simplified — flat at DC, -6dB at Nyquist)
+    ctx->ns_b[0] = 1.0f;
+    ctx->ns_b[1] = -2.0f;
+    ctx->ns_b[2] = 1.0f;
+
+    return ctx;
+}
+
+float dither_generate(DitherContext *ctx) {
+    float d = 0.0f;
+
+    switch (ctx->method) {
+    case DITHER_RECTANGULAR: {
+        // RPDF: uniform in [-0.5, +0.5) * LSB
+        ctx->state = lfsr_next(ctx->state);
+        float u = (float)ctx->state / (float)0xFFFFFFFF;
+        d = u - 0.5f;
+        break;
+    }
+
+    case DITHER_TRIANGULAR: {
+        // TPDF: sum of two RPDF samples
+        ctx->state = lfsr_next(ctx->state);
+        float u1 = (float)ctx->state / (float)0xFFFFFFFF - 0.5f;
+        ctx->state = lfsr_next(ctx->state);
+        float u2 = (float)ctx->state / (float)0xFFFFFFFF - 0.5f;
+        d = u1 + u2;
+        break;
+    }
+
+    case DITHER_TRIANGULAR_HP: {
+        // TPDF with DC removal
+        ctx->state = lfsr_next(ctx->state);
+        float u1 = (float)ctx->state / (float)0xFFFFFFFF - 0.5f;
+        ctx->state = lfsr_next(ctx->state);
+        float u2 = (float)ctx->state / (float)0xFFFFFFFF - 0.5f;
+        float tpdf = u1 + u2;
+        d = tpdf - ctx->prev_dither; // High-pass
+        ctx->prev_dither = tpdf;
+        break;
+    }
+
+    default:
+        break;
+    }
+
+    return d * ctx->amplitude;
+}
+
+void dither_process(DitherContext *ctx,
+                    const float *input,
+                    int16_t *output,
+                    size_t samples) {
+    for (size_t i = 0; i < samples; i++) {
+        float dither = dither_generate(ctx);
+        float dithered = input[i] + dither;
+        int32_t quantized = (int32_t)lrintf(dithered);
+        // Clamp to prevent overflow
+        if (quantized > 32767) quantized = 32767;
+        if (quantized < -32768) quantized = -32768;
+        output[i] = (int16_t)quantized;
+    }
+}
+
+void dither_free(DitherContext *ctx) {
+    free(ctx);
+}
+```
+
+### 19.2 Python Dither Verification Script
+
+```python
+import numpy as np
+import struct
+import wave
+
+def generate_tpdf(n_samples):
+    """Generate TPDF dither."""
+    u1 = np.random.uniform(-0.5, 0.5, n_samples)
+    u2 = np.random.uniform(-0.5, 0.5, n_samples)
+    return u1 + u2
+
+def quantize_to_16bit(samples):
+    """Quantize float samples to 16-bit PCM."""
+    dither = generate_tpdf(len(samples))
+    dithered = samples + dither * (1.0 / 32768.0)
+    quantized = np.round(dithered * 32768.0).astype(np.int16)
+    return np.clip(quantized, -32768, 32767)
+
+def test_dither():
+    """Test dithering on 1 kHz sine wave at -80 dBFS."""
+    sr = 44100
+    freq = 1000
+    duration = 1.0
+
+    # Generate -80 dBFS sine wave
+    t = np.arange(int(sr * duration)) / sr
+    amplitude = 10 ** (-80 / 20)  # -80 dBFS
+    sine = amplitude * np.sin(2 * np.pi * freq * t)
+
+    # Quantize with dither
+    quantized = quantize_to_16bit(sine)
+
+    # Compute FFT
+    N = len(quantized)
+    window = np.hanning(N)
+    fft_result = np.fft.rfft(quantized.astype(np.float32) * window)
+    freqs = np.fft.rfftfreq(N, 1/sr)
+    magnitude = np.abs(fft_result) / N * 2
+
+    # Find fundamental and harmonics
+    fundamental_idx = np.argmax(magnitude[(freqs > 900) & (freqs < 1100)])
+    harmonic_2 = np.max(magnitude[(freqs > 1900) & (freqs < 2100)])
+    harmonic_3 = np.max(magnitude[(freqs > 2900) & (freqs < 3100)])
+
+    fundamental = magnitude[(freqs > 900) & (freqs < 1100)][fundamental_idx]
+    thd = 20 * np.log10(np.sqrt(harmonic_2**2 + harmonic_3**2) / fundamental)
+
+    print(f"Fundamental: {20*np.log10(fundamental/32768):.1f} dBFS")
+    print(f"2nd Harmonic: {20*np.log10(harmonic_2/32768):.1f} dBFS")
+    print(f"3rd Harmonic: {20*np.log10(harmonic_3/32768):.1f} dBFS")
+    print(f"THD: {thd:.1f} dB")
+
+    # Without dither, THD would be ~-50 to -60 dB
+    # With TPDF dither, THD should be below -100 dB
+    if thd < -80:
+        print("Dither appears to be working (low harmonic distortion)")
+    else:
+        print("WARNING: High harmonic distortion detected")
+
+if __name__ == "__main__":
+    test_dither()
+```
+
+---
+
+## 20. SUMMARY: DITHERING DECISION TREE
+
+```
+Is bit depth being reduced?
+│
+├── NO → No dithering needed
+│
+└── YES ↓
+    │
+    Is output format floating-point?
+    │
+    ├── YES → Dither at level proportional to effective LSB at each sample
+    │
+    └── NO ↓
+        │
+        Is the output format for measurement/acoustic analysis?
+        │
+        ├── YES → Use TPDF_HP (high-pass) to prevent DC accumulation
+        │
+        └── NO ↓
+            │
+            Is the content primarily tonal (classical, acoustic)?
+            │
+            ├── YES → Use TPDF (triangular) — flat noise floor
+            │
+            └── NO ↓
+                │
+                Is this the final delivery format (CD, streaming)?
+                │
+                ├── YES → Use TPDF+NS (noise shaping, mild POW-r)
+                │
+                └── NO → Use TPDF (standard triangular)
+```
+
+---
+
+## 21. DITHERING IN SPECIFIC WORKFLOWS
+
+### 21.1 Mastering Workflow
+
+The professional mastering workflow for a 24-bit/96 kHz session to 16-bit/44.1 kHz CD:
+
+```
+Session: 32-bit float / 96 kHz (internal DAW processing)
+         ↓
+1. Final processing (EQ, compression, limiting)
+   - Apply at 96 kHz internal rate
+   - Do not reduce bit depth yet
+         ↓
+2. Export at 96 kHz (maintain resolution)
+         ↓
+3. High-quality SRC to 44100 Hz
+   - Use libsamplerate SINC_BEST_QUALITY or soxr
+   - Internal bit depth: 64-bit float
+   - This step preserves all audible content
+         ↓
+4. Apply dithering for bit-depth reduction
+   - Dither from float to 24-bit: optional (TPDF)
+   - Dither from 24-bit to 16-bit: REQUIRED (TPDF or TPDF+NS)
+   - Choose TPDF for classical/acoustic music
+   - Choose TPDF+NS for pop/electronic
+         ↓
+5. Verify with spectral analysis
+   - Check for harmonic distortion on test tones
+   - Verify noise floor is flat (no distortion products)
+         ↓
+6. Output to CD image or streaming master
+```
+
+### 21.2 Podcast Production Workflow
+
+Podcast audio typically ends up at 44.1 kHz (CD/export) or 48 kHz (video sync), at 16-bit or 24-bit:
+
+```
+Recording: 48 kHz / 24-bit (or higher)
+         ↓
+Editing: 32-bit float / 48 kHz (DAW)
+         ↓
+Export: 48 kHz / 24-bit WAV
+         ↓
+SRC (if needed): 48 kHz → 44.1 kHz for CD
+   - Use FFmpeg: aresample=resampler=soxr:precision=28
+   - Internal dithering not needed (bit depth unchanged)
+         ↓
+Dither: 24-bit → 16-bit (for MP3/AAC streaming)
+   - Apply TPDF dither
+   - FFmpeg: aformat=s16p:dither_method=triangular
+         ↓
+Encode: MP3 or AAC at target bitrate
+```
+
+### 21.3 Archival Workflow
+
+For long-term digital preservation, follow these principles:
+
+```
+Capture: DSD64 or PCM 176.4 kHz / 24-bit
+         ↓
+Store as: FLAC level 8 at capture rate (lossless)
+         ↓
+Delivery copies: Only apply SRC + dither at delivery
+   - Never modify the archive master
+   - Apply dither only once, at final delivery stage
+         ↓
+Verify: Periodic checksum verification of archive files
+```
+
+### 21.4 Video Post-Production Workflow
+
+Video requires strict sample rate synchronization. The challenge is that 44100 Hz is not an integer multiple of common video frame rates like 23.976 fps:
+
+```
+Video frame rate: 23.976 fps (film) or 24 fps
+Audio sync requirement: Audio must match video duration exactly
+
+Challenge: 44100 / 23.976 ≈ 1839.4 samples per frame (not integer!)
+Solution 1: Use 48000 Hz audio (48000 / 24 = 2000 samples/frame, exact)
+Solution 2: Accept that CD audio will not perfectly frame-align
+Solution 3: Use pull-up/pull-down rates (e.g., 47.952 kHz for 23.976 fps)
+
+For 48 kHz audio synced to 23.976 fps video:
+- Apply SRC only if output needs to be 44100 Hz
+- Maintain sample-accurate sync throughout the pipeline
+```
+
+### 21.5 Broadcast WAV Workflow
+
+Broadcast uses BWF (Broadcast Wave Format) with specific requirements defined in EBU R68:
+
+```
+Sample rate: 48 kHz (EBU R68 standard)
+Bit depth: 20-bit minimum
+Dithering: TPDF applied at delivery stage
+Peak level: -18 dBFS = 0 on PPM (per EBU R68)
+
+When converting broadcast content to CD:
+- SRC: 48000 → 44100 (FFmpeg with soxr)
+- Dither: TPDF (broadcast standard)
+- Verify against original EBU R68 calibration tones
+```
+
+---
+
+## 22. DITHERING AND LOUDNESS
+
+### 22.1 Dithering Does Not Affect Loudness
+
+Dithering adds noise that is uncorrelated with the signal. The long-term RMS of the added noise adds to the signal's RMS, but this effect is imperceptible for TPDF dither (noise is below -93 dBFS for 16-bit). Without dithering, quantization adds harmonic distortion that is far more perceptually disturbing.
+
+### 22.2 Dithering and Dynamic Range
+
+**True dynamic range** is the ratio between the largest possible signal and the noise floor:
+
+For a 16-bit system with TPDF dither:
+- Maximum signal: 0 dBFS
+- Noise floor: approximately -93 dBFS
+- True dynamic range: about 93 dB
+
+For a 16-bit system without dither:
+- Maximum signal: 0 dBFS
+- Noise + distortion floor: varies, may be higher in midrange
+- True dynamic range: reduced due to harmonic distortion
+
+### 22.3 Dithering and Loudness Normalization
+
+Loudness normalization (EBU R128, ReplayGain) measures loudness in the presence of dither noise. The dither noise floor contributes to the measured loudness, but this contribution is negligible at normal listening levels.
+
+---
+
+## 23. THE HISTORY OF DITHERING
+
+### 23.1 Early Digital Audio
+
+Early digital audio systems from the 1970s and 1980s did not always use dithering, resulting in audible harmonic distortion on quiet passages, particularly for classical and acoustic recordings.
+
+### 23.2 Key Research Milestones
+
+| Year | Researcher | Contribution |
+|------|-----------|-------------|
+| 1972 | Schuchman | First formal treatment of dither in digital systems |
+| 1984 | Vanderkooy, Lipshitz | Dither theory for audio |
+| 1992 | Wannamaker, Lipshitz, Vanderkooy | Theory of Dithered Quantization |
+| 1995 | Lipshitz, Vanderkooy | Practical TPDF dither implementation |
+| 1998 | Ehmer | Psychoacoustic dithering |
+| 2000 | Ehmer | TPDF dither widely adopted in DAWs |
+
+### 23.3 Modern DAWs
+
+All major DAWs apply dithering in their export and bounce processes. Each offers different dithering options:
+- **Logic Pro:** POW-r dithering in bounce settings
+- **Pro Tools:** TPDF and POW-r dithering options
+- **Ableton Live:** Built-in dithering options
+- **REAPER:** Multiple dithering options including TPDF and noise-shaped variants
+
+---
+
+## 24. DITHERING MYTHS AND FACTS
+
+### Myth 1: Dithering adds noise that degrades quality
+
+**Fact:** Dithering REPLACES harmonic distortion with broadband noise. The noise is at or below the theoretical quantization noise floor and is typically inaudible. Without dithering, quantization produces harmonic distortion that is far more perceptually disturbing.
+
+### Myth 2: Dithering is only needed for 16-bit output
+
+**Fact:** Dithering is beneficial whenever bit depth is reduced, even from 24-bit to 20-bit. The improvement is more subtle at higher bit depths but still measurable and can be audible on critical material.
+
+### Myth 3: TPDF dither is always better than RPDF
+
+**Fact:** TPDF dither is better for tonal material where harmonic distortion would be audible. For primarily noise-like material (drums, noise textures), RPDF dither is acceptable and produces slightly less total noise.
+
+### Myth 4: Noise shaping is always better than flat dither
+
+**Fact:** Noise shaping trades noise in one frequency range for noise in another. On material with significant high-frequency content (cymbals, breath noise, tape hiss), aggressive noise shaping may actually be audible as extra brightness or a glassy character.
+
+### Myth 5: You should dither at every stage
+
+**Fact:** Dither should be applied ONCE at the final output stage. Applying dither at every intermediate conversion accumulates noise unnecessarily. The exception is when each intermediate stage's output will be heard or further processed independently.
+
+### Myth 6: Dithering fixes everything
+
+**Fact:** Dithering cannot recover information that was lost to prior quantization. If the source was recorded at 16-bit, dithering when converting from 24-bit to 16-bit cannot restore details already lost at the 16-bit recording stage.
+
+---
+
+## 25. SUMMARY REFERENCE TABLES
+
+### 25.1 Dither Type Selection Guide
+
+| Content Type | Dither Type | Noise Shaping | Notes |
+|-------------|------------|--------------|-------|
+| Classical music | TPDF | Optional (mild) | Preserves tonal quality |
+| Jazz/acoustic | TPDF | Optional | |
+| Pop/electronic | TPDF+NS | Yes (mild-medium) | Hides noise in HF |
+| Rock | TPDF+NS | Yes (mild) | |
+| Heavy metal | TPDF+NS | Yes (mild) | |
+| Hip-hop/R&B | TPDF+NS | Yes (medium) | |
+| Spoken word | RPDF or TPDF | No | Minimal tonal content |
+| Nature recordings | TPDF | Optional | |
+| Field recordings | TPDF | Optional | |
+| Ambience | TPDF | Optional | |
+
+### 25.2 Bit Depth and Dither Recommendations
+
+| Source | Output | Dither | Method | Notes |
+|--------|--------|--------|--------|-------|
+| 32-bit float | 24-bit | Optional | TPDF | Internal precision is high |
+| 32-bit float | 16-bit | Yes | TPDF+NS | REQUIRED |
+| 24-bit | 24-bit | No | — | No reduction |
+| 24-bit | 20-bit | Yes | TPDF | |
+| 24-bit | 16-bit | Yes | TPDF+NS | Standard delivery |
+| 20-bit | 16-bit | Yes | TPDF | |
+| 16-bit | 16-bit | No | — | No reduction |
+| DSD64 | 24-bit | Optional | TPDF | Optional |
+| DSD64 | 16-bit | Yes | TPDF | REQUIRED |
+
+### 25.3 Noise Shaping Strength Guide
+
+| Strength | NS Curve | Use Case | HF Noise Increase |
+|----------|---------|---------|------------------|
+| None | Flat | Measurement, neutral | 0 dB |
+| Mild (POW-r 1) | +3 dB at 15 kHz | Classical, acoustic | +3 dB |
+| Medium (POW-r 2) | +6 dB at 15 kHz | General music | +6 dB |
+| Aggressive (POW-r 3) | +10 dB at 15 kHz | Electronic, bass-heavy | +10 dB |
+| Very aggressive | +15+ dB at 15 kHz | Only if needed | +15+ dB |
+
+---
+
 *File generated for: Audio Engineering Knowledge Base*
 *Topic: Dithering, Noise Shaping, Quantization, Bit-Depth Reduction*
 *[NEEDS VERIFICATION] markers indicate specific numerical values that require additional source confirmation*
 *[NEEDS VERIFICATION]: The exact numerical coefficients for FFmpeg's triangular_ns noise shaping filter — the source code contains these values but they are not documented in the public API and should be verified against the libswresample source*
+*[NEEDS VERIFICATION]: The exact values of ATH at specific frequencies in Section 18.1 — the critical band table values are approximations based on standard psychoacoustic research and should be verified against ISO 226:2003*

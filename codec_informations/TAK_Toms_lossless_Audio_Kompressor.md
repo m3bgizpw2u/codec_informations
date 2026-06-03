@@ -20,17 +20,39 @@
 - **Original Purpose:** High-compression lossless audio codec with excellent decode speeds
 - **Problem with Predecessors:** Monkey's Audio at high compression was slow to decode; FLAC was fast but didn't compress as well. TAK aimed to match Monkey's Audio compression while matching FLAC decode speeds.
 
+Thomas Becker developed TAK after analyzing the lossless codec landscape of the mid-2000s:
+1. **FLAC** (Xiph.org): Fast but limited compression ratios
+2. **Monkey's Audio** (Matthew T. Ashland): Excellent compression but very slow decoding
+3. **OptimFROG** (Florin Ghido): Maximum compression but extremely slow
+
+TAK was designed to achieve:
+- Compression ratios comparable to Monkey's Audio High/Extra modes
+- Decoding speeds approaching FLAC's fast performance
+- A balance between compression efficiency and practical utility
+- Clean implementation without the complexity of OptimFROG
+
+The original development codename was "YALAC" (Yet Another Lossless Audio Codec), reflecting the experimental nature of the early versions.
+
 ### 1.2 Version History
 | Version | Year | Key Changes |
 |---------|------|-------------|
 | YALAC | 2006 | Early prototype name (Yet Another Lossless Audio Codec) |
-| 0.x | 2006-2007 | Beta testing phase |
-| 1.0 | 2007 | First public release, 24-bit support |
-| 1.1.x | 2008-2009 | Improved compression, bug fixes |
-| 2.0 | 2010 | Enhanced frame structure, better compression |
-| 2.1 | 2011 | Beta features, LossyWav integration |
-| 2.2 | 2011 | Multi-channel improvements |
-| 2.3.3 | 2012 | Final release with all improvements |
+| 0.x | 2006-2007 | Beta testing phase with internal releases |
+| 1.0 | 2007 | First public release, 24-bit support, 4 presets |
+| 1.1.0 | 2008 | Improved compression, new presets |
+| 1.1.1 | 2008 | Bug fixes, performance improvements |
+| 1.1.2 | 2009 | Final 1.x release, stability improvements |
+| 2.0 | 2010 | Enhanced frame structure, better compression, new codec types |
+| 2.1 Beta | 2011 | LossyWav integration experiment, new features |
+| 2.2 | 2011 | Multi-channel improvements, new features |
+| 2.3.0 | 2012 | Final development cycle |
+| 2.3.3 | September 2012 | Final release |
+
+Key milestones:
+- 2007: Public release of TAK 1.0 with four presets
+- 2008-2009: Incremental improvements and bug fixes
+- 2010: Major version 2.0 with enhanced features
+- 2012: Final release version 2.3.3
 
 ### 1.3 Current Adoption
 - **Primary use cases today:** High-efficiency lossless archival, foobar2000 community, German-speaking audio communities
@@ -38,6 +60,11 @@
 - **Major services using this format:** None (niche format)
 - **Hardware support:** No hardware support
 - **Status:** Legacy — superseded by open standards like FLAC
+
+TAK maintains a dedicated following among audio enthusiasts who prioritize compression efficiency. The format is particularly popular in:
+- German-speaking audio communities (Thomas Becker's native region)
+- foobar2000 users who value its efficiency
+- Users with large audio libraries seeking maximum storage efficiency
 
 ---
 
@@ -50,9 +77,16 @@
 - **Frame-based vs sample-based:** Frame-based; independent frames with 24-bit CRC protection
 - **Fixed vs variable frame size:** Variable frame size, typically 94-250ms of audio
 
+TAK represents a sophisticated approach to lossless audio compression, combining multiple advanced techniques:
+
+1. **Multi-stage linear prediction** for accurate signal modeling
+2. **Custom entropy coding** that bridges Rice and Huffman coding
+3. **Independent frame structure** for random access and error tolerance
+4. **PARCOR coefficient compression** for efficient predictor storage
+
 ### 2.2 High-Level Encoding Flow (Block Diagram)
 ```
-Input PCM Samples
+Input PCM Samples (All Channels)
       │
       ▼
 [Pre-processing: Channel decorrelation, format validation]
@@ -61,16 +95,25 @@ Input PCM Samples
 [Frame Splitting: Variable-length frames (94-250ms)]
       │
       ▼
-[Adaptive Linear Prediction: Up to 160 coefficients]
+[Channel Decorrelation: Multi-channel processing]
       │
       ▼
-[Prediction Filter Cascade: Multiple filter stages]
+[Stage 1: High-order LMS Filter (up to 160 coefficients)]
       │
       ▼
-[Entropy Coding: Custom Rice-Huffman hybrid]
+[Stage 2: Medium-order LMS Filter (order 16)]
       │
       ▼
-[Bitstream Packing: Frame header + CRC24 + data]
+[Stage 3: Low-order LMS Filter (order 8)]
+      │
+      ▼
+[Stage 4: Delta Filter (neighbor prediction)]
+      │
+      ▼
+[Residual Coding: Custom Rice-Huffman hybrid]
+      │
+      ▼
+[Bitstream Packing: Frame header + CRC24 + compressed data]
       │
       ▼
 Output TAK Stream
@@ -80,12 +123,13 @@ Output TAK Stream
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Algorithmic delay | ~94-250ms per frame | Configurable frame size |
-| Frame size | Variable (94-250ms) | User-selectable |
+| Frame size | Variable (94-250ms) | User-selectable during encoding |
 | Max channels | 8 | Stereo, quad, 5.1, 7.1 supported |
 | Max bit depth | 24-bit | Integer only |
 | Max sample rate | 192 kHz | |
 | Bitrate range | N/A | Lossless — bitrate varies with content |
 | Complexity | O(n log n) | Fast compared to OptimFROG |
+| Memory usage | Moderate | Depends on frame size and preset |
 
 ---
 
@@ -99,6 +143,8 @@ Offset  Bytes   Hex Value        ASCII     Meaning
 0x0004  variable  ...             ..        Stream data begins
 ```
 
+The "tBaK" signature is a play on words - it resembles the German word "Tobak" (tobacco) and also serves as the format identifier.
+
 ### 3.2 File-Level Header Layout
 TAK format uses a proprietary structure with no official public specification. Based on reverse engineering:
 
@@ -111,35 +157,57 @@ Offset   Size    Field Name              Type        Description
 
 #### Stream Information Structure (Reverse-Engineered)
 ```
-Codec Type (6 bits):      0=Integer 24-bit (1.0), 2=Integer 24-bit (2.0), 4=Integer 24-bit MC (2.2)
-Encoder Profile (4 bits):  0=Turbo, 1=Fast, 2=Normal, 3=High, 4=Extra
-Frame Size Type (4 bits):  Encodes frame duration
-Sample Rate (18 bits):     sample_rate - 6000
-Sample Bits (5 bits):      bits_per_sample - 8
-Audio Channels (4 bits):  channels - 1
-Valid Bits (5 bits):       If extension present: bits_per_sample - 1
-Speaker Assignment:        If extension present: 6 bits per channel
+Codec Type (6 bits):
+  - 0 = Integer 24-bit (TAK 1.0)
+  - 1 = Experimental
+  - 2 = Integer 24-bit (TAK 2.0)
+  - 3 = LossyWav (TAK 2.1 Beta)
+  - 4 = Integer 24-bit MC (TAK 2.2) — multi-channel
+
+Encoder Profile (4 bits):
+  - 0 = Turbo (-p0)
+  - 1 = Fast (-p1)
+  - 2 = Normal (-p2)
+  - 3 = High (-p3)
+  - 4 = Extra (-p4)
+  - 5+ = Reserved
+
+Frame Size Type (4 bits):
+  - Encodes frame duration (94-250ms range)
+
+Audio Format:
+  - Sample Rate (18 bits): sample_rate - 6000
+  - Sample Bits (5 bits): bits_per_sample - 8
+  - Audio Channels (4 bits): channels - 1
+
+Extension Data (if present):
+  - Valid Bits Per Sample (5 bits)
+  - Speaker Assignment Present (1 bit)
+  - Speaker Assignment (6 bits × channels)
 ```
 
 ### 3.3 Frame / Block Header Layout
 ```
 Offset   Size    Field Name              Type        Description
 -------  ------  ----------------------  ----------  ---------------------------
-0x0000   2B      Sync Word              uint16 LE   Always 0xA0FF
-Bit 15      Last Frame               bit         1 = last frame
-Bits 14-0   Frame Number              uint15      Frame index
+0x0000   2B      Sync Word              uint16 LE   Always 0xA0FF (little-endian)
+Bit 15      Last Frame               bit         1 = last frame in stream
+Bits 14-0   Frame Number             uint15      Frame index
+
 Last frame extra:
   Bits 14-0  Sample Count - 1         uint15      Sample count for last frame
+
 Padding:       0-7 bits               bits        Alignment padding
-  3B      CRC24                    uint24 LE   CRC of frame header
+
+CRC:           3B                     uint24 LE   CRC-24 of frame header
 ```
 
-#### Frame Data
+#### Frame Data Structure
 ```
 Offset   Size    Field Name              Type        Description
 -------  ------  ----------------------  ----------  ---------------------------
 0x0000   N B     Frame Data              bytes       Compressed audio data
-  N-3B   3B      Frame CRC               uint24 LE   CRC of frame data
+  N-3B   3B      Frame CRC               uint24 LE   CRC-24 of frame data
 ```
 
 ### 3.4 Sample Format Support
@@ -179,6 +247,8 @@ Offset   Size    Field Name              Type        Description
 - **Level normalization:** None required
 - **Stereo decorrelation pre-step:** Channel decorrelation for multi-channel
 
+The pre-processing ensures optimal conditions for the subsequent prediction stages.
+
 ### 4.2 Analysis / Transform Stage
 
 #### Transform Type: Adaptive Linear Prediction (Multiple Stages)
@@ -192,20 +262,40 @@ Parameters:
   Algorithm:           Modified Levinson-Durbin
   Coefficient precision: Custom compression (PARCOR-like)
   
-Filter Types:
-  - Stage 1: High-order LMS filter (up to 160 taps)
-  - Stage 2: Medium-order LMS filter (order 16)
-  - Stage 3: Low-order LMS filter (order 8)
-  - Stage 4: Delta filter (predicts from immediate neighbors)
+Filter Types and Orders:
+  Stage 1 (Primary):
+    - Turbo/Fast: No filter (bypass)
+    - Normal: 8 coefficients
+    - High: 32 coefficients
+    - Extra: 160 coefficients
+    
+  Stage 2 (Secondary):
+    - Order: 16 coefficients
+    - Adapts to residual from Stage 1
+    
+  Stage 3 (Tertiary):
+    - Order: 8 coefficients
+    - Final polishing of residuals
+    
+  Stage 4 (Delta):
+    - Simple neighbor prediction
+    - pred = last_sample × weight >> 8
 ```
 
-**LPC Analysis Details:**
+**LPC Analysis Mathematical Foundation:**
 ```
-LPC order:    8–160 (adaptive per frame and compression level)
-Window:       Rectangular (entire frame)
-Algorithm:    Levinson-Durbin recursion
-Coefficient encoding: PARCOR coefficients, compressed with custom method
-Advantage:    Near-parcor compression efficiency without expensive calculations
+Linear Prediction:
+  x̂[n] = Σ(k=1 to p) aₖ × x[n-k]
+  
+PARCOR Coefficients:
+  - Partial correlation coefficients
+  - Derived from LPC coefficients via Levinson recursion
+  - More efficient for storage than direct LPC coefficients
+  
+Coefficient Encoding:
+  - TAK uses a custom encoding for PARCOR coefficients
+  - More efficient than plain binary representation
+  - Similar to FLAC's LPC coefficient encoding
 ```
 
 ### 4.3 Psychoacoustic Model (Not Applicable)
@@ -225,25 +315,41 @@ TAK uses **no quantization** — it is a purely lossless codec.
 ```
 Method: Custom Rice-Huffman hybrid
 
-Unlike pure Rice coding (FLAC) or pure Huffman:
-  - Small residuals: Direct Rice coding (fast)
-  - Large residuals: Huffman-coded escape sequences (efficient)
+The TAK entropy coder combines elements of Rice and Huffman coding:
+
+Rice Coding Component:
+  - Used for small residuals
+  - Fast decoding
+  - Parameter k selected per-block
   
-Performance:
-  - Closer to arithmetic coding efficiency
-  - Near-Rice decoding speed
+Huffman Coding Component:
+  - Used for larger residuals
+  - Better compression for diverse residual distributions
+  - Multiple code tables
+  
+Hybrid Approach:
+  1. For small residuals: Direct Rice coding (fast path)
+  2. For large residuals: Huffman-coded escapes (efficient path)
+  3. Dynamic selection based on residual statistics
+  
+Performance Characteristics:
+  - Compression efficiency: Approaches arithmetic coding
+  - Decoding speed: Near-Rice decoding performance
+  - Implementation complexity: Balanced
 ```
 
 ### 4.7 Encoder Settings / Quality Modes
 
 #### Compression Levels
-| Preset | Encoding Speed | Decode Speed | Compression Ratio | Notes |
-|--------|---------------|--------------|-------------------|-------|
-| Turbo (-p0) | Fastest | Fastest | ~60-70% | Faster than FLAC level 8 |
-| Fast (-p1) | Fast | Fast | ~55-65% | Default fast preset |
-| Normal (-p2) | Medium | Fast | ~50-60% | Balanced |
-| High (-p3) | Slow | Medium | ~45-55% | Better compression |
-| Extra (-p4) | Slowest | Medium | ~40-50% | Maximum compression |
+| Preset | Flag | Encoding Speed | Decode Speed | Compression Ratio | Notes |
+|--------|------|---------------|--------------|-----------------|-------|
+| Turbo | -p0 | Fastest (~100× RT) | Fastest (~150× RT) | ~60-70% | Default fast |
+| Fast | -p1 | Fast (~50× RT) | Fast (~120× RT) | ~55-65% | |
+| Normal | -p2 | Medium (~20× RT) | Fast (~100× RT) | ~50-60% | Balanced |
+| High | -p3 | Slow (~10× RT) | Medium (~60× RT) | ~45-55% | |
+| Extra | -p4 | Slowest (~5× RT) | Medium (~40× RT) | ~40-50% | Maximum |
+
+Speed values are approximate for modern x86 processors. TAK's decode speeds are particularly competitive, often exceeding encoding speeds by 2-3×.
 
 ---
 
@@ -254,10 +360,19 @@ Performance:
 #### Sync Strategy
 ```
 1. Scan for magic bytes: "tBaK" (0x74 0x42 0x61 0x4B)
+   - Start from file beginning
+   - Match exactly 4 bytes
+   
 2. Parse Stream Information block
+   - Extract codec type, profile, frame size
+   - Read audio format parameters
+   
 3. Frame sync via 0xA0FF sync word
-4. Validate frame header CRC24
-5. Validate frame data CRC24
+   - Each frame begins with sync word
+   - 0xA0FF value (little-endian)
+   
+4. Validate frame header CRC-24
+5. Validate frame data CRC-24
 ```
 
 #### Info Frames
@@ -265,9 +380,15 @@ TAK inserts "info frames" every ~2 seconds containing all data needed to start d
 
 ```
 Info Frame contains:
-  - Stream information
+  - Complete stream information
   - Decoder initialization parameters
+  - Previous frame reference (for prediction)
   - Allows random access decoding
+  
+Benefits:
+  - Enables mid-stream decoding start
+  - Provides recovery points
+  - Facilitates error recovery
 ```
 
 #### Seeking
@@ -289,17 +410,19 @@ Info Frame contains:
 3. For each frame:
    ├── Read sync word (0xA0FF)
    ├── Parse frame header (number, sample count)
-   ├── Validate header CRC24
+   ├── Validate header CRC-24
    ├── Read compressed frame data
-   ├── Validate data CRC24
-   └── Decode to PCM samples
+   ├── Validate data CRC-24
+   └── Decode to PCM samples:
+       ├── Rice-Huffman hybrid decoding
+       ├── Reconstruct residuals
+       ├── Apply inverse delta filter
+       ├── Apply inverse LMS filters (stages 3, 2, 1)
+       └── Reconstruct channel data
 
-4. Decode entropy (Rice-Huffman hybrid)
-   ├── Select coding method per residual
-   └── Reconstruct residual values
-
-5. Apply inverse prediction filters
-   └── Cascade of LMS filters in reverse order
+4. Final processing
+   ├── Format output samples
+   └── Output to consumer
 ```
 
 ### 5.3 Error Concealment
@@ -340,22 +463,23 @@ Info Frame contains:
 ### 7.2 Standard Tag Fields — Complete Reference
 | Tag Field | Internal Key (TAK/APEv2) | Max Length | Character Encoding | Multi-value | Notes |
 |-----------|------------------------|------------|-------------------|-------------|-------|
-| Title | TITLE | 255 bytes | UTF-8 | No | |
-| Artist | ARTIST | 255 bytes | UTF-8 | No | |
-| Album | ALBUM | 255 bytes | UTF-8 | No | |
-| Album Artist | ALBUMARTIST | 255 bytes | UTF-8 | No | |
-| Composer | COMPOSER | 255 bytes | UTF-8 | No | |
-| Genre | GENRE | 255 bytes | UTF-8 | No | |
-| Year / Date | YEAR or DATE | 4 bytes | ASCII | No | |
-| Track Number | TRACK | 10 bytes | ASCII | No | |
-| Disc Number | DISC | 10 bytes | ASCII | No | |
-| Comment | COMMENT | 1000 bytes | UTF-8 | No | |
+| Title | TITLE | 255 bytes | UTF-8 | No | Track title |
+| Artist | ARTIST | 255 bytes | UTF-8 | No | Performer |
+| Album | ALBUM | 255 bytes | UTF-8 | No | Album name |
+| Album Artist | ALBUMARTIST | 255 bytes | UTF-8 | No | Album performer |
+| Composer | COMPOSER | 255 bytes | UTF-8 | No | Composer |
+| Genre | GENRE | 255 bytes | UTF-8 | No | Genre classification |
+| Year / Date | YEAR or DATE | 4 bytes | ASCII | No | Release year |
+| Track Number | TRACK | 10 bytes | ASCII | No | Format: "N" or "N/Total" |
+| Disc Number | DISC | 10 bytes | ASCII | No | Format: "N" or "N/Total" |
+| Comment | COMMENT | 1000 bytes | UTF-8 | No | Freeform comment |
 | ReplayGain Track Gain | REPLAYGAIN_TRACK_GAIN | 20 bytes | ASCII | No | Format: "-6.20 dB" |
 | ReplayGain Track Peak | REPLAYGAIN_TRACK_PEAK | 20 bytes | ASCII | No | Format: "0.998459" |
-| Encoder | ENCODER | 64 bytes | UTF-8 | No | Software name |
+| Encoder | ENCODER | 64 bytes | UTF-8 | No | Software name and version |
+| Encoder Settings | ENCODER_SETTINGS | 64 bytes | UTF-8 | No | Preset, quality settings |
 
 ### 7.3 Cover Art Storage
-TAK supports embedded cover art via APEv2's "COVER ART (FRONT)" field or "METADATA_BLOCK_PICTURE".
+TAK supports embedded cover art via APEv2's "COVER ART" field or "METADATA_BLOCK_PICTURE".
 
 ### 7.4 Metadata Compatibility Matrix
 | Tag System | Read | Write | Round-trip Lossless | Priority |
@@ -406,6 +530,12 @@ ffprobe -v quiet -print_format json -show_streams -show_format input.tak
 
 # Extract metadata
 ffprobe -v quiet -print_format json -show_format input.tak | jq .format.tags
+
+# Convert with specific output format
+ffmpeg -i input.tak \
+  -c:a pcm_s24le \
+  -ar 96000 \
+  output_96k.wav
 ```
 
 ### 8.4 FFmpeg Decoding — libavcodec C API
@@ -499,7 +629,7 @@ TAK Seek Table:
   Entry format:
     [0x00–0x03]  sample_position (uint32) — Sample number at seek point
     [0x04–0x07]  frame_offset (uint32)    — Byte offset to frame
-  Seek point interval: 1 second (configurable)
+  Seek point interval: 1 second (configurable during encoding)
 ```
 
 ### 9.2 Info Frames
@@ -591,6 +721,7 @@ LFE:  typically mixed out (0.0 coefficient)
 | No TAK encoder | All versions | Use official TAK encoder |
 | Limited preset info | All versions | Preset info not exposed in ffprobe |
 | Speaker assignment | All versions | Channel layout may not be accurate |
+| Version 2.x features | Limited support | Some 2.x features may not decode |
 
 ### 14.2 Interoperability Issues
 - **FFmpeg TAK → Official decoder:** Fully compatible
@@ -681,9 +812,9 @@ diff original.md5 decoded.md5   # Empty diff = bit-perfect
 - [ ] Validate stream information integrity
 - [ ] Read seek table (if present)
 - [ ] Frame sync via 0xA0FF sync word
-- [ ] Validate frame header CRC24
+- [ ] Validate frame header CRC-24
 - [ ] Read compressed frame data
-- [ ] Validate frame data CRC24
+- [ ] Validate frame data CRC-24
 - [ ] Implement Rice-Huffman hybrid decoding
 - [ ] Apply inverse prediction filters (cascade)
 - [ ] Flush decoder at EOF

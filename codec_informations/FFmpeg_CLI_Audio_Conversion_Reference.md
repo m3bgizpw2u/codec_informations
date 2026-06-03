@@ -1216,9 +1216,524 @@ ffmpeg -h encoder=libopus | head -30
 
 ---
 
-## 15. REFERENCE COMMANDS BY USE CASE
+## 15. ADVANCED FILTERGRAPH PATTERNS
 
-### 15.1 Use Case: Universal Archive Format
+### 15.1 Multi-Band Processing
+
+```bash
+# 3-band equalizer with compressor
+ffmpeg -i input.wav \
+  -af "equalizer=f=1000:width_type=o:width=2:gain=-3,\
+       equalizer=f=3000:width_type=o:width=2:gain=-6,\
+       acompressor=threshold=0.25:ratio=3" \
+  -c:a flac output.flac
+
+# 5-band parametric EQ
+ffmpeg -i input.wav \
+  -af "equalizer=f=100:t=h:width=0.2:g=-3,\
+       equalizer=f=500:t=h:width=0.2:g=-2,\
+       equalizer=f=1000:t=h:width=0.2:g=0,\
+       equalizer=f=3000:t=h:width=0.2:g=2,\
+       equalizer=f=8000:t=h:width=0.2:g=3" \
+  -c:a libopus -b:a 128k output.opus
+```
+
+### 15.2 Dynamic Range Control
+
+```bash
+# Limiter with threshold
+ffmpeg -i input.wav \
+  -af "alimiter=limit=0.95:attack=5:release=50:level=1" \
+  -c:a flac output.flac
+
+# Multi-band compressor
+ffmpeg -i input.wav \
+  -af "mbc=band1=threshold=-20:ratio=4:attack=10:release=100,\
+       mbc=band2=threshold=-25:ratio=3:attack=5:release=200,\
+       mbc=band3=threshold=-30:ratio=2:attack=2:release=300" \
+  -c:a flac output.flac
+```
+
+### 15.3 Stereo Enhancement
+
+```bash
+# Stereo widening
+ffmpeg -i input.wav \
+  -af "stereowiden=level=0.5" \
+  -c:a flac output.flac
+
+# Stereo to mono with pan
+ffmpeg -i input.wav \
+  -af "pan=mono|c0=c0+c1" \
+  -c:a flac output.flac
+
+# Binaural beat generator (for relaxation)
+ffmpeg -f lavfi -i "sine=frequency=200:duration=300" \
+  -af "stereowiden=delay=20:depth=0.5:stereo=0.5" \
+  -c:a flac binaural_300s.flac
+```
+
+### 15.4 Audio Restoration
+
+```bash
+# Denoise with hqdn3d
+ffmpeg -i input.wav \
+  -af "hqdn3d=4:3:6:4.5" \
+  -c:a flac output.flac
+
+# Non-local means denoising
+ffmpeg -i input.wav \
+  -af "anlmdn=s=7:m=5" \
+  -c:a flac output.flac
+
+# Click removal (using afftdn)
+ffmpeg -i input.wav \
+  -af "afftdn=nf=-25:nt=w" \
+  -c:a flac output.flac
+```
+
+### 15.5 Spectrogram Analysis
+
+```bash
+# Generate spectrogram video
+ffmpeg -i input.wav \
+  -lavfi "showspectrumpic=s=1920x1080:legend=1:color=magma" \
+  -frames:v 1 spectrogram.png
+
+# Show audio spectrum in terminal (requires ffplay)
+ffplay -f lavfi "amovie=input.wav,showspectrum=mode=separate"
+
+# Stereo oscilloscope view
+ffplay -f lavfi "amovie=input.wav,astats=metadata=1:reset=1,adrawgraph=lavfi.astats.Overall.Peak_level:max=0:min=-30"
+```
+
+### 15.6 Frequency Analysis
+
+```bash
+# FFT-based frequency display
+ffplay -f lavfi "amovie=input.wav,showfreqs=mode=line:fscale=log"
+
+# Frequency spectrum over time (waterfall)
+ffplay -f lavfi "amovie=input.wav,showspectrumpic=s=1280x720:orientation=1"
+```
+
+### 15.7 Phase and Correlation Metering
+
+```bash
+# Phase correlation meter
+ffplay -f lavfi "amovie=input.wav,aphasemeter=video=1:mpc=cyan"
+
+# Stereo phase meter with oscilloscope
+ffplay -f lavfi "amovie=input.wav,astats=metadata=1:reset=1,adrawgraph=lavfi.astats.1.RMS_level.Overall:max=0:min=-60"
+```
+
+### 15.8 Loudness Measurement (EBU R128)
+
+```bash
+# Integrated loudness (LUFS) measurement
+ffmpeg -i input.wav -af loudnorm=print_format=json -f null -
+
+# Measure and output stats
+ffmpeg -i input.wav -af ebur128=metadata=1 -f null - 2>&1 | \
+  grep -E "I:|Peak:|True Peak:"
+
+# EBU R128 scan with full report
+ffmpeg -i input.wav \
+  -af "ebur128=peak=true:framelog=verbose" \
+  -f null - 2>&1 | tee ebur128_report.txt
+```
+
+### 15.9 Dynamic Range Analysis
+
+```bash
+# Dynamic range meter (DR14)
+ffmpeg -i input.wav -af "dynaudnorm=f=150:g=15:p=0.5" -f null -
+
+# Measure crest factor
+ffmpeg -i input.wav -af astats=metadata=1:reset=1 -f null - 2>&1 | \
+  grep -E "Crest factor|Peak level|RMS level"
+```
+
+### 15.10 Converting with Silence Removal
+
+```bash
+# Detect silence and trim
+ffmpeg -i input.wav \
+  -af "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:detection=peak,silenceremove=stop_periods=1:stop_duration=0.5:stop_threshold=-40dB:detection=peak" \
+  -c:a flac output_trimmed.flac
+
+# Fade in/out
+ffmpeg -i input.wav \
+  -af "afade=t=in:ss=0:d=3,afade=t=out:st=57:d=3" \
+  -c:a flac output_faded.flac
+```
+
+### 15.11 Time-Stretching and Pitch-Shifting
+
+```bash
+# Rubberband time-stretch (speed up by 10%)
+ffmpeg -i input.wav \
+  -af "rubberband=tempo=1.1" \
+  -c:a flac output_sped_up.flac
+
+# Rubberband pitch-shift (down one octave)
+ffmpeg -i input.wav \
+  -af "rubberband=pitch=2.0" \
+  -c:a flac output_pitched.flac
+
+# Rubberband pitch-shift (up one semitone)
+ffmpeg -i input.wav \
+  -af "rubberband=pitch=1.0595" \
+  -c:a flac output_sharp.flac
+```
+
+### 15.12 Resampling Quality
+
+```bash
+# High-quality resampling (soxr)
+ffmpeg -i input.wav -af "aresample=48000:resampler=soxr" -c:a flac output_48k.flac
+
+# Very high quality (soxr HQ)
+ffmpeg -i input.wav -af "aresample=96000:resampler=soxr:precision=28:cutoff=0.999" \
+  -c:a flac output_96k_hq.flac
+
+# Medium quality (swr)
+ffmpeg -i input.wav -af "aresample=48000:resampler=swr" -c:a flac output_48k_swr.flac
+```
+
+---
+
+## 16. PLATFORM-SPECIFIC OPTIMIZATIONS
+
+### 16.1 Linux Performance Tuning
+
+```bash
+# Use CPU-specific optimizations
+ffmpeg -i input.wav -c:a libopus -b:a 128k output.opus
+
+# Set CPU affinity for encoding
+taskset -c 0-7 ffmpeg -i input.wav -c:a flac -compression_level 8 output.flac
+
+# Real-time priority for encoding
+sudo ffmpeg -i input.wav -c:a flac -compression_level 8 output.flac
+```
+
+### 16.2 macOS Performance Tuning
+
+```bash
+# Use Apple's AudioToolbox encoder (native AAC)
+ffmpeg -i input.wav -c:a aac_at -b:a 256k output.m4a
+
+# Use CoreAudio output for direct hardware encoding
+ffmpeg -i input.wav -c:a alac output.m4a
+
+# Enable Apple's high-efficiency audio
+ffmpeg -i input.wav -c:a aac_at -profile:a aac_he -b:a 64k output.m4a
+```
+
+### 16.3 Windows Performance Tuning
+
+```bash
+# Use MediaFoundation AAC encoder (built-in Windows 10+)
+ffmpeg -i input.wav -c:a aac -b:a 256k output.m4a
+
+# Use DirectSound or WASAPI output
+ffplay -i input.wav -ao dsound   # DirectSound
+ffplay -i input.wav -ao wasapi   # WASAPI
+```
+
+### 16.4 ARM/Embedded Optimization
+
+```bash
+# Use libshine (fixed-point MP3, ARM-optimized)
+ffmpeg -i input.wav -c:a libshine -b:a 192k output.mp3
+
+# Use optimized resampling
+ffmpeg -i input.wav -af "aresample=48000:resampler=soxr" -c:a flac output.flac
+```
+
+---
+
+## 17. TROUBLESHOOTING GUIDE
+
+### 17.1 Encoding Errors and Solutions
+
+| Error Message | Cause | Solution |
+|---------------|-------|----------|
+| `Error initializing output stream` | Incompatible codec or format | Check `-c:a` and `-f` flags |
+| `Decoder (codec xxx) not found` | Codec not compiled in | Rebuild FFmpeg or use alternate codec |
+| `Sample rate not supported` | Resample first | Add `-ar 44100` before encode |
+| `Channel layout not supported` | Downmix required | Add `-ac 2` or use pan filter |
+| `Invalid argument: value out of range` | Invalid bitrate/quality | Check valid range for codec |
+| `Encoder requires more input samples` | Frame size mismatch | Check `frame_size` and input |
+| `Application provided invalid, non monotonically increasing dts` | Timestamps issue | Add `-fflags +genpts` or re-mux |
+| `Non-monotonic timestamps` | Seeking issue | Use `-avoid_negative_ts make_zero` |
+| `Past duration was large` | Frame reordering | Add `-max_muxing_queue_size` |
+
+### 17.2 Performance Issues
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| Encoding too slow | CPU bottleneck | Reduce quality, increase threads |
+| Encoding too fast (low quality) | Quality set too low | Increase `-q:a` or `-b:a` |
+| High memory usage | Large buffers | Reduce `-threads` or frame buffer |
+| Disk I/O bottleneck | Slow storage | Use RAM disk or faster storage |
+| GPU encoding slow | CPU overhead | Disable GPU encoding or reduce resolution |
+
+### 17.3 Quality Issues
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| Audio artifacts at transitions | Bitrate too low | Increase `-b:a` or `-q:a` |
+| Pre-echo on transients | Encoder lookahead | Use better encoder (libfdk_aac) |
+| Stereo imaging issues | Joint stereo misconfigured | Use `-af "stereowiden"` or force stereo |
+| Dither noise audible | Dither disabled | Add `-af "aformat=...:dither_method=..."` |
+| Resampling artifacts | Low-quality resampler | Use `-af "aresample=...:resampler=soxr"` |
+
+### 17.4 Container/Format Issues
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| Metadata lost after transcode | Wrong `-map_metadata` | Use `-map_metadata 0` |
+| Cover art not embedding | Stream mapping issue | Use `-map 0:a -map 1:v -disposition:v attached_pic` |
+| Seeking broken in output | Missing seek index | Use `-use_editlist 0` for MP4 |
+| Playback stuttering | Buffer size | Increase `-max_muxing_queue_size` |
+| File won't play on device | Codec not supported | Use `-c:a aac` instead of `-c:a libfdk_aac` |
+
+### 17.5 Verification Commands
+
+```bash
+# Full audio analysis
+ffmpeg -i input.wav -af "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=stats.txt" \
+  -f null -
+
+# Detailed stream info
+ffprobe -v quiet -print_format json -show_streams -show_format input.wav | jq .
+
+# Encoder info
+ffmpeg -h encoder=libopus 2>&1 | head -50
+
+# Decoder info
+ffmpeg -h decoder=libopus 2>&1 | head -50
+
+# Format capabilities
+ffmpeg -formats 2>&1 | grep -i "wav\|flac\|mp3\|aac\|ogg\|opus"
+```
+
+---
+
+## 18. REFERENCE QUICK-LOOK TABLES
+
+### 18.1 Sample Format Quick Reference
+
+| Input Format | Encoder Format | Filter Required | Notes |
+|-------------|---------------|-----------------|-------|
+| WAV (s16) | FLAC | None | FLAC accepts s16 natively |
+| WAV (s16) | libopus | Yes | Requires `-af aformat=sample_fmts=fltp` |
+| WAV (s16) | libfdk_aac | Yes | Requires `-af aformat=sample_fmts=fltp` |
+| WAV (s16) | libmp3lame | Yes | Requires `-af aformat=sample_fmts=s32p` |
+| FLAC | libopus | Yes | Decode to PCM, then format convert |
+| MP3 | any | No | Decoder outputs s16/s32 automatically |
+
+### 18.2 Codec Compatibility Matrix
+
+| Target | Input: WAV | Input: FLAC | Input: MP3 | Input: AAC |
+|--------|-----------|------------|-----------|-----------|
+| FLAC | Direct | Direct | Decode→Encode | Decode→Encode |
+| MP3 | LAME encode | Decode→Encode | Direct (copy) | Decode→Encode |
+| AAC | libfdk_aac | Decode→Encode | Decode→Encode | Direct (copy) |
+| Opus | libopus encode | Decode→Encode | Decode→Encode | Decode→Encode |
+| ALAC | Direct | Decode→Encode | Decode→Encode | Decode→Encode |
+
+### 18.3 Platform Encoder Availability
+
+| Encoder | Linux | macOS | Windows | Android |
+|---------|-------|-------|---------|---------|
+| libmp3lame | ✓ (ffmpeg-full) | ✓ (brew) | ✓ | ✓ |
+| libfdk_aac | ✗ (requires custom) | ✓ (brew) | ✗ (requires custom) | ✗ |
+| libopus | ✓ | ✓ | ✓ | ✓ |
+| libvorbis | ✓ | ✓ | ✓ | ✓ |
+| aac (native) | ✓ | ✓ | ✓ | ✓ |
+| alac | ✓ | ✓ | ✓ | ✓ |
+| flac | ✓ | ✓ | ✓ | ✓ |
+| aac_at | ✗ | ✓ (AudioToolbox) | ✗ | ✗ |
+
+### 18.4 Bandwidth vs Quality Quick Reference
+
+| Bandwidth | Recommended Codec | Setting | Use Case |
+|-----------|-----------------|---------|----------|
+| 6 kbps mono | Opus | `-b:a 6k` | Emergency audio |
+| 32 kbps mono | Opus | `-b:a 32k` | Voice notes |
+| 64 kbps mono | Opus | `-b:a 64k` | Podcast mono |
+| 96 kbps stereo | AAC | `-b:a 96k` | Mobile streaming |
+| 128 kbps stereo | Opus | `-b:a 128k` | Standard streaming |
+| 192 kbps stereo | AAC | `-b:a 192k` | High quality streaming |
+| 256 kbps stereo | AAC | `-b:a 256k` | Near-transparent |
+| 320 kbps stereo | MP3 | `-b:a 320k` | Maximum MP3 compatibility |
+| Lossless | FLAC | `-compression_level 8` | Archival |
+
+---
+
+## 19. INTEGRATION EXAMPLES
+
+### 19.1 Python Integration via subprocess
+
+```python
+#!/usr/bin/env python3
+import subprocess
+import json
+import os
+
+def encode_audio(input_path, output_path, codec="flac", quality=8):
+    """Encode audio with FFmpeg subprocess call."""
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-c:a", codec,
+        "-compression_level", str(quality),
+        "-progress", "pipe:1",
+        output_path
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True
+    )
+
+    progress = {}
+    for line in process.stdout:
+        line = line.strip()
+        if "=" in line:
+            key, value = line.split("=", 1)
+            progress[key] = value
+        print(f"\rEncoding: {progress.get('out_time_ms', 0)} ms", end="")
+
+    process.wait()
+    print()
+    if process.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed with code {process.returncode}")
+
+def probe_audio(file_path):
+    """Probe audio file metadata using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        "-show_format",
+        file_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+def batch_encode(directory, codec="libopus", bitrate="128k"):
+    """Batch encode all audio files in directory."""
+    supported = [".wav", ".flac", ".m4a", ".mp3"]
+    for filename in os.listdir(directory):
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in supported:
+            input_path = os.path.join(directory, filename)
+            output_path = os.path.join(directory, filename.rsplit(".", 1)[0] + ".opus")
+            encode_audio(input_path, output_path, codec=codec, bitrate=bitrate)
+```
+
+### 19.2 Shell Script: Automatic Quality Preset
+
+```bash
+#!/bin/bash
+# audio-encode.sh — Universal audio encoder with quality presets
+
+set -euo pipefail
+
+PRESET="${1:-high}"
+INPUT="${2:-}"
+OUTPUT="${3:-}"
+
+case "$PRESET" in
+    lossless)
+        CODEC="flac"
+        EXTRA="-compression_level 8"
+        ;;
+    high)
+        CODEC="libopus"
+        EXTRA="-b:a 128k"
+        ;;
+    standard)
+        CODEC="libopus"
+        EXTRA="-b:a 96k"
+        ;;
+    low)
+        CODEC="libopus"
+        EXTRA="-b:a 48k"
+        ;;
+    mp3)
+        CODEC="libmp3lame"
+        EXTRA="-q:a 2"
+        ;;
+    *)
+        echo "Unknown preset: $PRESET"
+        echo "Usage: $0 [lossless|high|standard|low|mp3] <input> <output>"
+        exit 1
+        ;;
+esac
+
+if [ -z "$INPUT" ] || [ -z "$OUTPUT" ]; then
+    echo "Usage: $0 [lossless|high|standard|low|mp3] <input> <output>"
+    exit 1
+fi
+
+ffmpeg -y -i "$INPUT" \
+    -c:a "$CODEC" $EXTRA \
+    -map_metadata 0 \
+    -progress pipe:1 \
+    "$OUTPUT"
+
+echo "Done: $OUTPUT"
+```
+
+### 19.3 Bash Completion for FFmpeg Audio Flags
+
+```bash
+# Add to ~/.bashrc for FFmpeg audio flag completion
+
+_ffmpeg_audio_codecs() {
+    local cur prev
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    case "$prev" in
+        -c:a)
+            COMPREPLY=($(compgen -W "libmp3lame libvorbis libopus libfdk_aac aac alac flac pcm_s16le pcm_s32le ac3 copy" -- "$cur"))
+            ;;
+        -b:a)
+            COMPREPLY=($(compgen -W "8k 16k 24k 32k 48k 64k 96k 112k 128k 160k 192k 224k 256k 320k 512k" -- "$cur"))
+            ;;
+        -q:a)
+            COMPREPLY=($(compgen -W "0 1 2 3 4 5 6 7 8 9" -- "$cur"))
+            ;;
+        -ar)
+            COMPREPLY=($(compgen -W "8000 11025 16000 22050 32000 44100 48000 88200 96000 176400 192000" -- "$cur"))
+            ;;
+        -ac)
+            COMPREPLY=($(compgen -W "1 2 4 5 6 7 8" -- "$cur"))
+            ;;
+        -compression_level)
+            COMPREPLY=($(compgen -W "0 1 2 3 4 5 6 7 8 9 10 11 12" -- "$cur"))
+            ;;
+    esac
+    return 0
+}
+
+complete -F _ffmpeg_audio_codecs ffmpeg
+complete -F _ffmpeg_audio_codecs ffprobe
+```
+
+---
+
+## 20. REFERENCE COMMANDS BY USE CASE
+
+### 20.1 Use Case: Universal Archive Format
 ```bash
 ffmpeg -i input.wav -c:a flac -compression_level 8 \
   -movflags +gaplessinfo \

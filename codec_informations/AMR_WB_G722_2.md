@@ -35,6 +35,21 @@
 - **Hardware support:** Built into cellular modem chipsets (Qualcomm, MediaTek, Samsung, Intel), most smartphone application processors for hardware decode
 - **Status:** Dominant wideband speech codec in mobile networks globally; deployed on billions of devices
 
+### 1.4 Codec Comparison
+
+AMR-WB occupies a unique position in the speech codec landscape. The following comparison highlights its relationship to other relevant codecs:
+
+| Codec | Bandwidth | Bitrate | Algorithm | Typical Use Case |
+|-------|-----------|---------|----------|-----------------|
+| G.711 (PCM) | 300–3400 Hz | 64 kbps | None (raw PCM) | PSTN telephone |
+| AMR-NB | 300–3400 Hz | 4.75–12.2 kbps | ACELP | GSM/3G voice |
+| G.722 | 50–7000 Hz | 48/56/64 kbps | SB-ADPCM | Wideband conferencing |
+| **AMR-WB** | **50–7000 Hz** | **6.60–23.85 kbps** | **ACELP** | **VoLTE, VoIP, 3G/4G** |
+| AMR-WB+ | 50–16000 Hz | 6–48 kbps | ACELP+TCX | Enhanced wideband |
+| Opus (VoIP) | 50–20000 Hz | 6–510 kbps | SILK+CELT | General VoIP |
+| EVRC | 300–3400 Hz | 8.5 kbps | RCELP | CDMA networks |
+| Speex (wideband) | 50–8000 Hz | 2–44 kbps | CELP | Open-source VoIP |
+
 ---
 
 ## 2. TECHNICAL ARCHITECTURE OVERVIEW
@@ -916,6 +931,335 @@ ffmpeg -hwaccel mediacodec -i input.awb -c:a pcm_s16le output.wav
 - **Truncated file:** Last incomplete frame handled as corrupted frame, concealment applied.
 - **Sample rate not 16 kHz:** FFmpeg's libswresample automatically resamples to 16 kHz before encoding (if encoder is available).
 - **Channel count > 1:** Stereo input is downmixed to mono before AMR-WB encoding.
+
+### 14.4 Performance Characteristics
+
+Understanding the computational complexity of AMR-WB is important for real-time implementation and hardware design:
+
+```
+AMR-WB Computational Complexity:
+─────────────────────────────────────────────────────────────────────
+Total Complexity:           38 WMOPS (Weighted Million Operations Per Second)
+                           (including VAD/CNG processing)
+
+Breakdown by Component:
+  Core ACELP processing:    ~25 WMOPS
+  LPC analysis:             ~5 WMOPS
+  VAD/CNG:                 ~3 WMOPS
+  Bitstream operations:      ~2 WMOPS
+  Other overhead:           ~3 WMOPS
+
+Memory Requirements (Fixed-Point Implementation):
+  RAM (work memory):        5.3 kilowords (~10.6 KB)
+  ROM (tables/code):       ~64 KB (including code and tables)
+
+Algorithmic Delay Breakdown:
+  Input buffer latency:     0 ms (immediate)
+  Look-ahead buffer:       5 ms (80 samples)
+  Frame processing:         20 ms (320 samples)
+  Output buffer latency:    0 ms (immediate)
+  ─────────────────────────────────────────────
+  Total codec delay:       25 ms (one-way)
+
+Comparative Complexity:
+  Codec          WMOPS    RAM (KB)
+  ─────────────────────────────────
+  AMR-WB         38       10.6
+  AMR-NB         15       4.3
+  G.711          0.01     0.1
+  G.722.1        30       8.0
+  Opus           50-100+   varies
+  Speex (wideband) 20     5.0
+```
+
+### 14.5 Quality Metrics and Testing
+
+AMR-WB quality is measured using standardized subjective and objective metrics:
+
+```
+Subjective Quality Metrics:
+─────────────────────────────────────────────────────────────────────
+Test Methodology:     ITU-T P.800 (MOS - Mean Opinion Score)
+Scale:               1 (Bad) to 5 (Excellent)
+                     4.0+ = Toll quality (indistinguishable from PSTN at best)
+                     3.5+ = Network quality (satisfactory for most calls)
+
+AMR-WB MOS Scores (clean speech):
+  Mode 6.60 kbps:    2.8-3.2 (Fair)
+  Mode 8.85 kbps:    3.2-3.6 (Good, equivalent to G.722 at 48 kbps)
+  Mode 12.65 kbps:   3.6-3.9 (Good, equivalent to G.722 at 56 kbps)
+  Mode 15.85 kbps:   3.8-4.0 (Excellent)
+  Mode 23.85 kbps:   4.0-4.3 (Excellent, equivalent to G.722 at 64 kbps)
+
+Objective Quality Metrics:
+  PESQ (P.862):      Perceptual Evaluation of Speech Quality
+                      Range: -0.5 to 4.5
+                      AMR-WB@12.65kbps typically achieves 3.0-3.5
+                      
+  POLQA (P.863):      Perceptual Objective Listening Quality Analysis
+                      Superior to PESQ for newer codecs
+                      AMR-WB@23.85kbps achieves 4.0-4.3 (MOS equivalent)
+
+Bandwidth Comparison vs. Narrowband:
+  AMR-NB (AMR 12.2):    ~50% better intelligibility than G.711
+  AMR-WB (12.65 kbps):   ~20% better than AMR-NB in formal tests
+                          ~30% better in real-world listening
+  
+Frequency Content Preserved:
+  AMR-WB adds: 50-100 Hz (bass rumble, male fundamental)
+               3400-7000 Hz (consonants, fricatives, breathiness)
+  The high-frequency content significantly improves:
+    - Consonant discrimination ("s" vs "sh" vs "f")
+    - Speaker recognition (timbre)
+    - Naturalness of speech
+    - Music segments (when present in voice mail)
+```
+
+---
+
+## 15. AMR-WB IN TELEPHONY AND VOICE COMMUNICATIONS
+
+### 15.1 VoLTE (Voice over LTE) Integration
+
+AMR-WB is the primary voice codec used in 4G LTE networks through the VoLTE standard. Understanding its integration is essential for telecom applications:
+
+```
+VoLTE Architecture Overview:
+─────────────────────────────────────────────────────────────────────────────
+
+1. IMS (IP Multimedia Subsystem):
+   • VoLTE uses the IMS architecture for session control
+   • SIP (Session Initiation Protocol) for call setup
+   • RTP (Real-Time Transport Protocol) for audio transport
+   • AMR-WB carried in RTP payloads per RFC 4867
+
+2. AMR-WB in VoLTE:
+   • Default codec for VoLTE voice calls
+   • Bandwidth indicator (BWE) signaling for wideband
+   • AMR-WB octet-aligned format used in RTP
+   • Mode adaptation based on radio conditions
+
+3. Codec Negotiation:
+   • SDP offer/answer for codec list
+   • AMR-WB listed with MIME type "audio/AMR-WB"
+   • Preferred mode indicated in SDP
+   • Fallback to AMR-NB if AMR-WB not supported
+
+4. Quality of Service:
+   • LTE QoS Class Identifiers (QCIs) for voice
+   • QCI 1: Conversational Voice (priority 2, delay 100ms)
+   • Guaranteed bitrate for voice bearers
+   • Adaptive modulation based on channel conditions
+
+VoLTE Codec Selection Flow:
+─────────────────────────────────────────────────────────────────────────────
+
+1. UE (User Equipment) initiates call
+2. SIP INVITE with SDP offer containing AMR-WB in codec list
+3. Network responds with SDP answer accepting AMR-WB
+4. AMR-WB RTP session established
+5. Initial mode typically 12.65 kbps
+6. Mode adaptation occurs based on CQI (Channel Quality Indicator)
+7. AMR-WB frames transmitted every 20ms
+```
+
+### 15.2 SIP and WebRTC Integration
+
+AMR-WB can be used in SIP-based and WebRTC-based voice communications:
+
+```
+SIP/SDP Example (AMR-WB Offer):
+─────────────────────────────────────────────────────────────────────────────
+
+INVITE sip:user@example.com SIP/2.0
+Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK776
+Max-Forwards: 70
+From: <sip:caller@example.com>;tag=1234
+To: <sip:user@example.com>
+Call-ID: abc123@10.0.0.1
+CSeq: 1 INVITE
+Contact: <sip:caller@10.0.0.1>
+Content-Type: application/sdp
+
+v=0
+o=- 12345 12345 IN IP4 10.0.0.1
+s=VoLTE Call
+c=IN IP4 10.0.0.1
+t=0 0
+m=audio 5004 RTP/AVP 97
+a=rtpmap:97 AMR-WB/16000/1
+a=fmtp:97 mode-set=0,1,2,3,4,5,6,7,8;mode-change-period=2;mode-change-capability=2;max-red=0
+a=ptime:20
+a=maxptime:40
+
+SDP Parameters Explained:
+─────────────────────────────────────────────────────────────────────────────
+• mode-set=0,1,2,3,4,5,6,7,8: All 9 bitrate modes allowed
+• mode-change-period=2: Mode can change every 2 frames (40ms)
+• mode-change-capability=2: Can handle mode changes every 2 frames
+• max-red=0: No redundancy (can be 0-2 for RFC 3267 redundancy)
+• ptime=20: 20ms frame duration
+• maxptime=40: Maximum payload duration is 40ms
+```
+
+### 15.3 Voice Activity Detection and Comfort Noise
+
+AMR-WB includes sophisticated VAD/CNG for efficient silence suppression:
+
+```
+VAD (Voice Activity Detection):
+─────────────────────────────────────────────────────────────────────────────
+AMR-WB VAD algorithm analyzes:
+• Spectral energy in different frequency bands
+• Zero-crossing rate
+• Pitch stability
+• Signal level relative to background noise
+
+VAD Decision:
+• VAD=1: Speech detected, transmit full frame
+• VAD=0: Silence/noise, transmit SID (Silence Insertion Descriptor) frame
+
+SID (Silence Descriptor) Frame:
+• Transmitted periodically during silence periods
+• Contains CNG (Comfort Noise Generation) parameters
+• Frame size: 39 bits
+• Update rate: Every 8th frame during silence
+
+DTX (Discontinuous Transmission):
+• When VAD=0, transmitter stops sending speech frames
+• Reduces bandwidth by ~50% for typical conversational speech
+• SID frames maintain sync between encoder and decoder
+• Decoder generates comfort noise based on SID parameters
+
+Comfort Noise Generation (CNG):
+• Spectral envelope of background noise
+• Noise level estimation
+• Periodic updates from SID frames
+• Smooth transitions to avoid artifacts
+```
+
+---
+
+## 16. AMR-WB+ EXTENDED VERSION
+
+### 16.1 Overview of AMR-WB+
+
+AMR-WB+ (also known as 3GPP TS 26.290) extends AMR-WB with additional capabilities:
+
+```
+AMR-WB+ Key Enhancements:
+─────────────────────────────────────────────────────────────────────────────
+
+1. Higher Bitrates:
+   • Up to 48 kbps for mono
+   • Up to 64 kbps for stereo
+   • Variable bitrate within session
+
+2. Higher Sample Rates:
+   • Native support for 16, 24, 32, 48 kHz
+   • Allows better quality for music content
+
+3. Stereo Support:
+   • Independent L/R encoding
+   • Channel coupling option
+   • Reduced bitrate for stereo via coupling
+
+4. Transform Coded eXcitation (TCX):
+   • Alternative to ACELP for certain signal types
+   • Better for music and tonal signals
+   • Dynamic switching between ACELP and TCX
+
+5. Bandwidth Extension:
+   • Extended frequency response beyond 7 kHz
+   • Bandwidth up to 16 kHz (super-wideband)
+```
+
+### 16.2 AMR-WB+ vs AMR-WB Comparison
+
+| Feature | AMR-WB | AMR-WB+ |
+|---------|--------|---------|
+| Sample Rate | 16 kHz | Up to 48 kHz |
+| Max Bitrate (mono) | 23.85 kbps | 48 kbps |
+| Max Bitrate (stereo) | N/A | 64 kbps |
+| Stereo Support | No | Yes |
+| Codec Modes | ACELP only | ACELP + TCX |
+| Frequency Range | 50-7000 Hz | 20-16000 Hz |
+| Primary Use | Voice | Voice + Music |
+| Complexity | 38 WMOPS | ~60 WMOPS |
+
+---
+
+## 17. TESTING AND VALIDATION
+
+### 17.1 Reference Test Vectors
+
+The 3GPP provides reference test vectors for AMR-WB conformance testing:
+
+```
+Reference Test Vector Requirements:
+─────────────────────────────────────────────────────────────────────────────
+
+1. Source Files:
+   • 3GPP provides standardized speech test sequences
+   • Multiple languages and speaking styles
+   • Clean and noisy conditions
+
+2. Expected Output:
+   • Bit-exact encoded output for each mode
+   • Reference decoded output for each mode
+   • PSQM (Perceptual Speech Quality Measure) scores
+
+3. Test Coverage:
+   • All 9 bitrate modes
+   • Mode switching sequences
+   • DTX/CNG operation
+   • Error concealment
+
+4. Available Test Vectors:
+   • From 3GPP specification TS 26.190
+   • Include both clean and noisy test files
+   • Reference encoder/decoder output files
+```
+
+### 17.2 Quality Testing Methodologies
+
+```
+Subjective Testing (ITU-T P.800 Series):
+─────────────────────────────────────────────────────────────────────────────
+
+1. MOS (Mean Opinion Score) Testing:
+   • Panel of listeners rate quality 1-5
+   • Absolute Category Rating (ACR) method
+   • Degradation Category Rating (DCR) method
+   • Comparison Category Rating (CCR) method
+
+2. Test Conditions:
+   • Clean speech (office environment)
+   • Background noise (car, babble, street)
+   • Multiple languages
+   • Multiple speakers (male/female)
+
+3. Results Interpretation:
+   • MOS 4.0-5.0: Excellent (toll quality)
+   • MOS 3.5-4.0: Good (network quality)
+   • MOS 3.0-3.5: Fair (communicable quality)
+   • MOS 2.0-3.0: Poor (synthesized quality)
+   • MOS 1.0-2.0: Bad (unusable)
+
+Objective Testing (ITU-T P.862/P.863):
+─────────────────────────────────────────────────────────────────────────────
+
+1. PESQ (Perceptual Evaluation of Speech Quality):
+   • ITU-T P.862
+   • Range: -0.5 to 4.5
+   • High correlation with subjective MOS for narrowband/wideband
+
+2. POLQA (Perceptual Objective Listening Quality Analysis):
+   • ITU-T P.863
+   • Superior to PESQ for newer codecs
+   • Supports wideband and super-wideband testing
+   • Required for modern codec evaluation
+```
 
 ---
 

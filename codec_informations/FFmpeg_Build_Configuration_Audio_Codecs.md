@@ -946,3 +946,672 @@ ffprobe -v quiet -show_entries stream=codec_name,sample_rate,channels,bits_per_s
 *File generated for: DBpoweramp-equivalent audio converter knowledge base*
 *Depth target: Complete implementation reference*
 *[NEEDS VERIFICATION] markers indicate claims requiring additional source confirmation*
+
+---
+
+## 14. CROSS-COMPILATION FOR MULTIPLE PLATFORMS
+
+### 14.1 Linux x86_64 to ARM
+```bash
+# Install ARM cross-compiler:
+sudo apt install gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
+
+# Configure for ARMhf (Raspberry Pi):
+./configure \
+  --arch=armhf \
+  --target-os=linux \
+  --cross-prefix=arm-linux-gnueabihf- \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac
+
+make -j$(nproc)
+```
+
+### 14.2 Linux to Windows (MinGW)
+```bash
+# Install MinGW cross-compiler:
+sudo apt install mingw-w64
+
+# Configure for Windows x86_64:
+./configure \
+  --arch=x86_64 \
+  --target-os=mingw64 \
+  --cross-prefix=x86_64-w64-mingw32- \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac \
+  --enable-nonfree
+
+make -j$(nproc)
+
+# Output: ffmpeg.exe for Windows
+```
+
+### 14.3 macOS Universal Binary
+```bash
+# Compile for Intel:
+./configure \
+  --arch=x86_64 \
+  --enable-audiotoolbox \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac
+
+make -j$(nproc)
+
+# Compile for ARM64:
+./configure \
+  --arch=arm64 \
+  --enable-audiotoolbox \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac
+
+make -j$(nproc)
+
+# Create universal binary:
+lipo -create ffmpeg_intel ffmpeg_arm64 -output ffmpeg_universal
+```
+
+---
+
+## 15. DEPENDENCY MANAGEMENT
+
+### 15.1 Manual Dependency Installation
+```bash
+# Build libmp3lame from source:
+wget https://sourceforge.net/projects/lame/files/lame/3.100/lame-3.100.tar.gz
+tar xzf lame-3.100.tar.gz
+cd lame-3.100
+./configure --prefix=/usr/local --enable-static --disable-shared
+make -j$(nproc)
+sudo make install
+
+# Build libopus from source:
+wget https://archive.mozilla.org/pub/opus/opus-1.4.tar.gz
+tar xzf opus-1.4.tar.gz
+cd opus-1.4
+./configure --prefix=/usr/local --enable-static --disable-shared
+make -j$(nproc)
+sudo make install
+
+# Build libfdk-aac from source:
+git clone https://github.com/mstorsjo/fdk-aac.git
+cd fdk-aac
+./autogen.sh
+./configure --prefix=/usr/local --enable-static --disable-shared
+make -j$(nproc)
+sudo make install
+
+# Update library cache:
+sudo ldconfig
+```
+
+### 15.2 vcpkg Dependency Management
+```bash
+# Install vcpkg:
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.sh
+
+# Install audio dependencies:
+./vcpkg install ffmpeg[mp3,vorbis,opus,aac] --triplet=x64-linux
+
+# Use in CMake:
+find_package(FFmpeg CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil)
+```
+
+### 15.3 Conan Dependency Management
+```bash
+# Install Conan:
+pip install conan
+
+# Create conanfile.txt:
+[requires]
+ffmpeg/7.1
+
+[options]
+ffmpeg:with_libmp3lame=True
+ffmpeg:with_libvorbis=True
+ffmpeg:with_libopus=True
+ffmpeg:with_libfdk_aac=True
+
+# Install dependencies:
+conan install . --build=missing
+
+# Use in CMake:
+find_package(FFmpeg CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE FFmpeg::avcodec FFmpeg::avformat)
+```
+
+---
+
+## 16. PERFORMANCE OPTIMIZATION
+
+### 16.1 Compiler Optimizations
+```bash
+# GCC/Clang optimization flags for audio:
+export CFLAGS="-O3 -march=native -mtune=native -ffast-math"
+export CXXFLAGS="-O3 -march=native -mtune=native -ffast-math"
+
+# For specific CPU targets:
+# -march=sandybridge  # Intel Sandy Bridge
+# -march=haswell      # Intel Haswell
+# -march=skylake      # Intel Skylake
+# -march=znver1       # AMD Zen
+# -march=znver2       # AMD Zen 2
+
+./configure \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac \
+  --extra-cflags="-O3 -march=native"
+
+make -j$(nproc)
+```
+
+### 16.2 SIMD Optimizations
+```bash
+# Enable SIMD (automatically detected):
+# SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2, AVX, AVX2, AVX-512
+
+# NASM/YASM for assembly optimization:
+sudo apt install nasm yasm
+
+# Verify SIMD support:
+cat /proc/cpuinfo | grep flags | head -1
+# Look for: sse, sse2, avx, avx2, avx512f
+```
+
+### 16.3 Link-Time Optimization
+```bash
+# Enable LTO (Link-Time Optimization):
+export CFLAGS="-O3 -flto"
+export CXXFLAGS="-O3 -flto"
+export LDFLAGS="-flto"
+
+./configure \
+  --enable-libmp3lame \
+  --enable-libopus \
+  --enable-libvorbis \
+  --enable-libfdk-aac
+
+make -j$(nproc)
+```
+
+---
+
+## 17. DEBUGGING BUILD ISSUES
+
+### 17.1 Common Build Failures
+```
+Error: "yasm/nasm not found"
+Solution: sudo apt install nasm yasm
+
+Error: "libmp3lame not found"
+Solution: sudo apt install libmp3lame-dev
+
+Error: "pkg-config not found"
+Solution: sudo apt install pkg-config
+
+Error: "GCC version too old"
+Solution: Install newer GCC or Clang
+
+Error: "unsupported gcc version"
+Solution: Check FFmpeg configure for supported versions
+```
+
+### 17.2 Debug Configure Issues
+```bash
+# Enable verbose configure:
+./configure --verbose
+
+# Check config.log for detailed errors:
+cat config.log | grep -i error
+
+# Test individual library detection:
+pkg-config --exists libmp3lame && echo "lame found" || echo "lame not found"
+pkg-config --modversion libmp3lame
+
+# Manual library path:
+export LD_LIBRARY_PATH=/custom/path/lib:$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=/custom/path/lib/pkgconfig:$PKG_CONFIG_PATH
+```
+
+### 17.3 Runtime Library Issues
+```bash
+# Check linked libraries:
+ldd ffmpeg
+
+# Verify library paths:
+ldconfig -p | grep libav
+
+# Fix library not found:
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# Permanent fix:
+echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local.conf
+sudo ldconfig
+```
+
+---
+
+## 18. DISTRIBUTION PACKAGING
+
+### 18.1 Debian/Ubuntu Package
+```bash
+# Create deb package structure:
+mkdir -p ffmpeg-7.1/debian
+cd ffmpeg-7.1
+
+# Create debian/control:
+cat > debian/control << EOF
+Package: ffmpeg-audio
+Version: 7.1
+Section: sound
+Priority: optional
+Depends: libavcodec59, libavformat59, libavutil57
+Architecture: amd64
+Description: Audio-focused FFmpeg build
+EOF
+
+# Create debian/rules:
+cat > debian/rules << 'EOF'
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_install:
+	make install DESTDIR=$(CURDIR)/debian/ffmpeg-audio
+EOF
+
+# Build package:
+dpkg-buildpackage -us -uc -b
+```
+
+### 18.2 RPM Package
+```bash
+# Create spec file (ffmpeg-audio.spec):
+cat > ffmpeg-audio.spec << EOF
+Name: ffmpeg-audio
+Version: 7.1
+Release: 1
+Summary: Audio-focused FFmpeg build
+License: GPL
+URL: https://ffmpeg.org
+BuildRequires: gcc, make, nasm
+Requires: glibc
+
+%description
+FFmpeg build optimized for audio processing.
+
+%install
+make install DESTDIR=%{buildroot}
+
+%files
+%{_bindir}/ffmpeg
+%{_mandir}/man1/ffmpeg.1
+EOF
+
+# Build RPM:
+rpmbuild -bb ffmpeg-audio.spec
+```
+
+### 18.3 Homebrew Formula
+```ruby
+# ffmpeg-audio.rb
+class FfmpegAudio < Formula
+  desc "Audio-focused FFmpeg build"
+  homepage "https://ffmpeg.org"
+  url "https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz"
+  sha256 "..."
+
+  depends_on "pkg-config" => :build
+  depends_on "nasm" => :build
+  depends_on "lame"
+  depends_on "libvorbis"
+  depends_on "opus"
+  depends_on "fdk-aac"
+
+  def install
+    system "./configure", 
+      "--prefix=#{prefix}",
+      "--enable-gpl",
+      "--enable-nonfree",
+      "--enable-libmp3lame",
+      "--enable-libvorbis",
+      "--enable-libopus",
+      "--enable-libfdk-aac",
+      "--disable-doc"
+    system "make", "-j#{ENV.make_jobs}"
+    system "make", "install"
+  end
+end
+
+# Install:
+brew install --formula ffmpeg-audio.rb
+```
+
+---
+
+## 19. VERSION COMPATIBILITY
+
+### 19.1 FFmpeg Version History
+| Version | Year | Major Audio Features |
+|---------|------|---------------------|
+| 0.5 | 2009 | Basic audio support |
+| 0.6 | 2010 | Improved AAC encoding |
+| 1.0 | 2012 | Opus decoder, improved filters |
+| 2.0 | 2013 | Opus encoder, native HE-AAC |
+| 2.1 | 2013 | AAC encoder improvements |
+| 2.2 | 2014 | Improved Vorbis, Opus |
+| 3.0 | 2016 | VDPAU, VAAPI improvements |
+| 3.4 | 2017 | Native AAC decoder improvements |
+| 4.0 | 2018 | Improved AAC, Opus |
+| 4.2 | 2019 | libaribb24, improved HE-AAC |
+| 4.4 | 2021 | Improved Opus, AAC |
+| 5.0 | 2022 | Improved VBR, new filters |
+| 5.1 | 2022 | Better multichannel |
+| 6.0 | 2023 | Improved performance |
+| 7.0 | 2024 | Current stable |
+
+### 19.2 API Version Compatibility
+```bash
+# Check libavcodec version:
+ffmpeg -version | grep libavcodec
+
+# Output example:
+# libavcodec 59.18.100
+
+# Major.Minor versioning:
+# - Same major version: Binary compatible
+# - Different major version: May need recompile
+
+# Check API deprecation warnings:
+ffmpeg -version 2>&1 | grep -i deprecat
+```
+
+### 19.3 ABI Stability
+```
+FFmpeg ABI stability guarantees:
+- Same major version: ABI stable
+- New minor version: ABI stable
+- New major version: ABI may break
+
+Always:
+- Use same FFmpeg version for encoder and decoder
+- Test with specific FFmpeg version
+- Document FFmpeg version used in your application
+```
+
+---
+
+## 20. CONTAINER INTEGRATION
+
+### 20.1 Docker Build
+```dockerfile
+# Dockerfile for FFmpeg audio build
+FROM ubuntu:22.04
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    nasm \
+    pkg-config \
+    git \
+    yasm \
+    libmp3lame-dev \
+    libvorbis-dev \
+    libopus-dev \
+    libfdk-aac-dev \
+    libwavpack-dev \
+    libass-dev \
+    libfreetype6-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build FFmpeg
+WORKDIR /ffmpeg
+RUN git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git . && \
+    ./configure \
+      --prefix=/usr/local \
+      --enable-gpl \
+      --enable-nonfree \
+      --enable-libmp3lame \
+      --enable-libvorbis \
+      --enable-libopus \
+      --enable-libfdk-aac \
+      --enable-libwavpack \
+      --enable-static \
+      --disable-shared \
+      --disable-doc && \
+    make -j$(nproc) && \
+    make install && \
+    make clean
+
+# Set entrypoint
+ENTRYPOINT ["/usr/local/bin/ffmpeg"]
+CMD ["-version"]
+```
+
+### 20.2 Docker Usage
+```bash
+# Build image:
+docker build -t ffmpeg-audio .
+
+# Run:
+docker run --rm ffmpeg-audio -i input.wav -c:a libmp3lame -b:a 192k output.mp3
+
+# Mount volume for I/O:
+docker run --rm -v $(pwd):/data ffmpeg-audio \
+  -i /data/input.wav -c:a libmp3lame -b:a 192k /data/output.mp3
+```
+
+---
+
+## 21. TESTING BUILD OUTPUT
+
+### 21.1 Basic Tests
+```bash
+#!/bin/bash
+# test_ffmpeg_build.sh
+
+FFMPEG="./ffmpeg"
+
+echo "=== FFmpeg Audio Build Test Suite ==="
+
+# Test 1: Help works
+echo -n "Test 1: Help command... "
+$FFMPEG -h > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 2: MP3 encoding
+echo -n "Test 2: MP3 encoding... "
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -c:a libmp3lame -b:a 192k /tmp/test.mp3 > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 3: AAC encoding
+echo -n "Test 3: AAC encoding... "
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -c:a libfdk-aac -b:a 192k /tmp/test.m4a > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 4: Opus encoding
+echo -n "Test 4: Opus encoding... "
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -c:a libopus -b:a 128k /tmp/test.opus > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 5: Vorbis encoding
+echo -n "Test 5: Vorbis encoding... "
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -c:a libvorbis -q:a 6 /tmp/test.ogg > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 6: FLAC encoding
+echo -n "Test 6: FLAC encoding... "
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" -c:a flac -compression_level 8 /tmp/test.flac > /dev/null 2>&1 && echo "PASS" || echo "FAIL"
+
+# Test 7: Verify output files
+echo -n "Test 7: File verification... "
+for f in /tmp/test.mp3 /tmp/test.m4a /tmp/test.opus /tmp/test.ogg /tmp/test.flac; do
+    if [ ! -s "$f" ]; then
+        echo "FAIL (missing: $f)"
+        exit 1
+    fi
+done
+echo "PASS"
+
+# Cleanup
+rm -f /tmp/test.mp3 /tmp/test.m4a /tmp/test.opus /tmp/test.ogg /tmp/test.flac
+
+echo "=== Test Suite Complete ==="
+```
+
+### 21.2 Codec Availability Test
+```bash
+#!/bin/bash
+# check_codecs.sh
+
+echo "=== Required Codecs ==="
+
+for codec in libmp3lame libvorbis libopus libfdk_aac; do
+    if ffmpeg -codecs 2>/dev/null | grep -q "$codec"; then
+        echo "[OK] $codec"
+    else
+        echo "[MISSING] $codec"
+    fi
+done
+
+echo ""
+echo "=== Audio Formats ==="
+
+for fmt in mp3 ogg opus m4a wma flac; do
+    if ffmpeg -formats 2>/dev/null | grep -q "E.*$fmt"; then
+        echo "[OK] $fmt encoding"
+    else
+        echo "[MISSING] $fmt encoding"
+    fi
+done
+
+echo ""
+echo "=== Hardware Acceleration ==="
+
+for hw in cuda nvenc vaapi qsv videotoolbox; do
+    if ffmpeg -codecs 2>/dev/null | grep -q "$hw"; then
+        echo "[OK] $hw"
+    else
+        echo "[N/A] $hw (not enabled)"
+    fi
+done
+```
+
+---
+
+## 22. CONTINUOUS INTEGRATION
+
+### 22.1 GitHub Actions
+```yaml
+# .github/workflows/build.yml
+name: FFmpeg Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential nasm pkg-config git yasm \
+            libmp3lame-dev libvorbis-dev libopus-dev \
+            libfdk-aac-dev libwavpack-dev libass-dev \
+            libfreetype6-dev libssl-dev
+      
+      - name: Configure
+        run: |
+          ./configure \
+            --prefix=/usr/local \
+            --enable-gpl \
+            --enable-nonfree \
+            --enable-libmp3lame \
+            --enable-libvorbis \
+            --enable-libopus \
+            --enable-libfdk-aac \
+            --enable-libwavpack
+      
+      - name: Build
+        run: make -j$(nproc)
+      
+      - name: Test
+        run: |
+          make check FFMPEG_BREW_TIMEOUT=300 || true
+          bash tests/checkcodecs.sh
+      
+      - name: Install
+        run: sudo make install
+      
+      - name: Verify install
+        run: /usr/local/bin/ffmpeg -version
+```
+
+---
+
+## 23. REFERENCE QUICK GUIDE
+
+### 23.1 Essential Configure Flags
+```bash
+# Minimal audio build:
+./configure \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac \
+  --enable-gpl \
+  --enable-nonfree
+
+# Full audio build:
+./configure \
+  --enable-libmp3lame \
+  --enable-libvorbis \
+  --enable-libopus \
+  --enable-libfdk-aac \
+  --enable-libwavpack \
+  --enable-libspeex \
+  --enable-libtwolame \
+  --enable-libopencore-amrnb \
+  --enable-libopencore-amrwb \
+  --enable-gpl \
+  --enable-version3 \
+  --enable-nonfree
+```
+
+### 23.2 Build Verification Commands
+```bash
+# Check all codecs:
+ffmpeg -codecs 2>/dev/null | grep "^ DEA"
+
+# Check specific encoder:
+ffmpeg -encoders 2>/dev/null | grep lib
+
+# Check formats:
+ffmpeg -formats 2>/dev/null | grep "^ D"
+
+# Test encoding:
+ffmpeg -f lavfi -i "sine=frequency=440:duration=1" \
+  -c:a libmp3lame -b:a 192k /tmp/test.mp3
+
+# Verify output:
+ffprobe /tmp/test.mp3
+```
+
+---
+
+*File expanded with: Cross-compilation, dependency management, performance optimization, debugging, distribution packaging, CI/CD, and quick reference guide*
